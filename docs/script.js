@@ -35,6 +35,8 @@ document.addEventListener("DOMContentLoaded", () => {
         },
       });
 
+      const data = await response.json();
+
       if (response.ok) {
         if (submitButton) {
           submitButton.disabled = true;
@@ -49,14 +51,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
         form.reset();
       } else {
-        throw new Error("Form submission failed");
+        // Log the error for debugging
+        console.error("Formspree error:", data);
+        throw new Error(data.error || "Form submission failed");
       }
     } catch (error) {
+      console.error("Form submission error:", error);
       if (submitButton) {
         submitButton.disabled = false;
         submitButton.textContent = "Join waitlist";
       }
-      alert("Oops! There was a problem submitting the form. Please try again.");
+      alert("Oops! There was a problem submitting the form. Please try again.\n\nError: " + error.message);
     }
   });
 });
