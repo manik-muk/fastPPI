@@ -21,11 +21,12 @@ document.addEventListener("DOMContentLoaded", () => {
   // Example formResponse URL:
   //   https://docs.google.com/forms/d/e/YOUR_FORM_ID/formResponse
 
+
   const GOOGLE_FORM_ACTION =
     "https://docs.google.com/forms/d/e/1FAIpQLScal7ViypEBOrES9MIC2j94y-nER76JK6IkRMpOMSIyxl6uXQ/formResponse";
 
-  const FIELD_EMAIL = "entry.2005620554"; // Email field
-  const FIELD_COMPANY = "entry.1045781291"; // Company field
+  const FIELD_EMAIL = "entry.1045781291"; // Email field
+  const FIELD_COMPANY = "entry.2005620554"; // Company field
   const FIELD_CONTEXT = "entry.1166974658"; // Context field
 
   const submitButton = form.querySelector('button[type="submit"]');
