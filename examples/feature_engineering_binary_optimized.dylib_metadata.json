@@ -1,0 +1,37 @@
+{
+  "input_vars": [
+    "csv_path"
+  ],
+  "num_outputs": 2,
+  "output_names": [
+    "output_0",
+    "output_1"
+  ],
+  "output_types": [
+    "dataframe",
+    "series"
+  ],
+  "output_lengths": [
+    600,
+    100
+  ],
+  "output_shapes": [
+    [
+      100,
+      7
+    ],
+    [
+      100
+    ]
+  ],
+  "output_columns": [
+    [
+      "id",
+      "age",
+      "income",
+      "purchase_amount",
+      "high_income_flag",
+      "age_centered"
+    ]
+  ]
+}

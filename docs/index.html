@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0"
+    />
+    <title>fastPPI – Compile your Python preprocessing into fast binaries</title>
+    <link rel="stylesheet" href="style.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="container header-inner">
+        <div class="logo">
+          <span class="logo-mark">fast</span><span class="logo-accent">PPI</span>
+        </div>
+        <nav class="nav">
+          <a href="#how-it-works">How it works</a>
+          <a href="#api">API</a>
+          <a href="#waitlist" class="nav-cta">Join waitlist</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="container hero-inner">
+          <div class="hero-copy">
+            <h1>Compile your Python preprocessing into fast, production-ready binaries.</h1>
+            <p class="hero-subtitle">
+              fastPPI analyzes your pandas- and string-heavy preprocessing code and
+              compiles it into an optimized native binary. Keep writing idiomatic Python,
+              ship low-latency data pipelines.
+            </p>
+            <div class="hero-actions">
+              <a href="#waitlist" class="btn btn-primary">Join the waitlist</a>
+              <a href="#api" class="btn btn-ghost">View example API</a>
+            </div>
+            <p class="hero-footnote">
+              Drop-in for existing preprocessing code – no rewrite into a new DSL required.
+            </p>
+          </div>
+          <div class="hero-card">
+            <div class="code-label">Before: plain Python</div>
+            <pre class="code-block">
+import fastPPI
+
+def transform(df):
+    df = df.assign(
+        full_name=df["first"] + " " + df["last"],
+        income_bucket=df["income"].clip(0, 250_000),
+    )
+    df = df[df["country"] == "US"]
+    return df
+
+binary = fastPPI.compile(transform)
+binary.run("input.csv", "output.csv")
+            </pre>
+            <div class="code-metadata">
+              <span>🚀 Compiled to native binary</span>
+              <span>⚡ Lower latency, predictable performance</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="how-it-works" class="section section-alt">
+        <div class="container">
+          <h2>How fastPPI works</h2>
+          <div class="grid-3">
+            <div class="card">
+              <h3>1. Trace your Python preprocessing</h3>
+              <p>
+                fastPPI runs your existing preprocessing code under a tracer that observes
+                your pandas and string operations, building a high-level graph of your
+                pipeline.
+              </p>
+            </div>
+            <div class="card">
+              <h3>2. Generate optimized native code</h3>
+              <p>
+                The traced graph is compiled into a low-level representation and emitted
+                as a native library / binary, leveraging efficient C implementations of
+                core operations.
+              </p>
+            </div>
+            <div class="card">
+              <h3>3. Run as a fast, self-contained binary</h3>
+              <p>
+                The resulting artifact can be called from Python, invoked from the CLI,
+                or embedded into existing services to reduce end-to-end latency and
+                stabilize performance.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="api" class="section">
+        <div class="container">
+          <h2>Example usage</h2>
+          <div class="grid-2">
+            <div>
+              <h3>Compile a transformation function</h3>
+              <pre class="code-block">
+import fastPPI
+import pandas as pd
+
+def preprocess(df: pd.DataFrame) -> pd.DataFrame:
+    # 1. Filter rows
+    df = df[df["country"] == "US"]
+
+    # 2. Feature engineering
+    df["full_name"] = df["first"] + " " + df["last"]
+    df["log_spend"] = (df["spend"] + 1).apply(np.log)
+
+    # 3. Cleanup
+    return df[["user_id", "full_name", "log_spend"]]
+
+# Compile once
+binary = fastPPI.compile(preprocess)
+
+# Run many times with low overhead
+binary.run("raw_users.csv", "features.csv")
+              </pre>
+            </div>
+            <div>
+              <h3>CLI-style invocation</h3>
+              <pre class="code-block">
+# After compilation, you might expose a CLI wrapper like:
+
+fastppi-run \
+  --binary compiled_preprocess.dylib \
+  --input raw_users.csv \
+  --output features.csv
+              </pre>
+              <p class="muted">
+                The exact API is evolving. The goal: a minimal surface area to go from
+                <em>Python preprocessing</em> to a <em>fast binary</em> you can run anywhere.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="waitlist" class="section section-accent">
+        <div class="container waitlist-container">
+          <div class="waitlist-copy">
+            <h2>Join the waitlist</h2>
+            <p>
+              fastPPI is in active development. If you’re interested in trying it on your
+              own preprocessing workloads, leave your info and we’ll be in touch as soon
+              as we’re ready for early users.
+            </p>
+            <ul class="waitlist-bullets">
+              <li>Early access to new compiler features</li>
+              <li>Direct line to influence roadmap</li>
+              <li>Best-effort help integrating fastPPI into your stack</li>
+            </ul>
+          </div>
+
+          <div class="waitlist-form-card">
+            <form
+              id="waitlist-form"
+              class="waitlist-form"
+              action="#"
+              method="POST"
+            >
+              <label>
+                Work email
+                <input
+                  type="email"
+                  name="email"
+                  placeholder="you@company.com"
+                  required
+                />
+              </label>
+              <label>
+                Company / team
+                <input
+                  type="text"
+                  name="company"
+                  placeholder="Your company or team name"
+                />
+              </label>
+              <label>
+                How are you preprocessing data today?
+                <textarea
+                  name="context"
+                  rows="3"
+                  placeholder="e.g. pandas-heavy ETL, feature pipelines for models, request-time personalization…"
+                ></textarea>
+              </label>
+              <button type="submit" class="btn btn-primary btn-full">
+                Join waitlist
+              </button>
+              <p class="waitlist-footnote">
+                For now this form will open an email draft to you. When you’re ready, you
+                can wire it up to your preferred form backend (e.g. Google Forms,
+                Tally.so, Mailchimp, custom endpoint).
+              </p>
+            </form>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container footer-inner">
+        <span>© <span id="year"></span> fastPPI</span>
+        <span class="footer-right">
+          Built for engineering teams that care about latency.
+        </span>
+      </div>
+    </footer>
+
+    <script src="script.js"></script>
+  </body>
+</html>
+
+

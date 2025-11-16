@@ -1,0 +1,101 @@
+id,age,income,city,purchase_amount
+1,25,55000,New York,120.5
+2,34,,Los Angeles,85.0
+3,,72000,Chicago,NaN
+4,45,68000,,200.0
+5,29,51000,New York,NaN
+6,,80000,San Francisco,150.2
+7,38,,Los Angeles,90.0
+8,41,62000,Chicago,130.0
+9,27,58000,New York,115.3
+10,33,,Chicago,NaN
+11,36,61000,Los Angeles,98.7
+12,42,,New York,143.0
+13,31,54000,,NaN
+14,39,70000,Chicago,155.4
+15,,72000,San Francisco,180.1
+16,28,56000,Los Angeles,88.0
+17,47,,New York,210.6
+18,35,59000,Chicago,112.0
+19,,64000,San Francisco,NaN
+20,44,68000,,199.9
+21,26,53000,Los Angeles,75.2
+22,32,,Chicago,140.0
+23,40,71000,New York,160.5
+24,,75000,San Francisco,170.3
+25,30,52000,,NaN
+26,37,,Chicago,101.0
+27,43,66000,Los Angeles,120.9
+28,46,,New York,200.0
+29,24,50000,Chicago,89.0
+30,29,,San Francisco,NaN
+31,41,69000,New York,150.0
+32,,72000,Los Angeles,138.2
+33,33,54000,,99.5
+34,45,,Chicago,112.3
+35,38,61000,San Francisco,NaN
+36,36,,Chicago,130.1
+37,40,70000,New York,160.0
+38,,68000,Los Angeles,105.7
+39,29,52000,,88.3
+40,35,,Chicago,140.9
+41,47,75000,San Francisco,175.4
+42,31,56000,Los Angeles,NaN
+43,,59000,Chicago,102.0
+44,43,,New York,210.0
+45,26,53000,San Francisco,90.0
+46,48,,Los Angeles,115.4
+47,39,62000,Chicago,128.3
+48,34,,New York,120.0
+49,42,68000,,NaN
+50,30,51000,San Francisco,96.0
+51,27,,Los Angeles,89.1
+52,44,71000,Chicago,143.4
+53,,74000,New York,178.0
+54,36,,San Francisco,155.3
+55,41,66000,Chicago,NaN
+56,33,58000,Los Angeles,102.2
+57,,60000,New York,112.0
+58,40,,Chicago,150.0
+59,28,54000,,85.0
+60,46,,Los Angeles,195.3
+61,37,62000,Chicago,132.2
+62,34,,New York,111.1
+63,43,69000,San Francisco,170.2
+64,,72000,Los Angeles,98.0
+65,31,56000,,103.5
+66,45,,Chicago,140.4
+67,29,51000,San Francisco,90.5
+68,,57000,New York,NaN
+69,38,,Los Angeles,108.3
+70,41,70000,,160.9
+71,35,,Chicago,140.5
+72,47,73000,San Francisco,180.0
+73,32,58000,Los Angeles,92.0
+74,,60000,Chicago,120.8
+75,44,,New York,205.0
+76,30,52000,San Francisco,100.1
+77,26,,Los Angeles,83.4
+78,39,64000,Chicago,135.0
+79,,68000,New York,159.0
+80,42,,San Francisco,170.0
+81,33,55000,Chicago,NaN
+82,,59000,Los Angeles,110.5
+83,37,,New York,130.0
+84,40,66000,Chicago,122.9
+85,28,,San Francisco,95.0
+86,46,72000,New York,200.3
+87,34,,Los Angeles,99.0
+88,31,56000,Chicago,114.8
+89,,62000,San Francisco,160.1
+90,43,,New York,209.0
+91,36,58000,Chicago,102.3
+92,,60000,Los Angeles,121.0
+93,29,,San Francisco,88.8
+94,41,70000,Chicago,150.3
+95,,72000,New York,184.0
+96,38,,Los Angeles,100.0
+97,30,51000,Chicago,92.1
+98,44,,San Francisco,145.0
+99,35,59000,Los Angeles,110.9
+100,,64000,Chicago,130.0
