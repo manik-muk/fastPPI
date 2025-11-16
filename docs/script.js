@@ -22,18 +22,13 @@ document.addEventListener("DOMContentLoaded", () => {
   //   https://docs.google.com/forms/d/e/YOUR_FORM_ID/formResponse
 
   const GOOGLE_FORM_ACTION =
-    "https://docs.google.com/forms/d/e/1FAIpQLScal7ViypEBOrES9MIC2j94y-nER76JK6IkRMpOMSIyxl6uXQ/viewform?usp=header"; // TODO: replace with your formResponse URL
+    "https://docs.google.com/forms/d/e/1FAIpQLScal7ViypEBOrES9MIC2j94y-nER76JK6IkRMpOMSIyxl6uXQ/formResponse";
 
-  const FIELD_EMAIL = "entry.Email"; // TODO: replace with your email entry.* name
-  const FIELD_COMPANY = "entry.Company"; // TODO: replace with your company entry.* name
-  const FIELD_CONTEXT = "entry.Context"; // TODO: replace with your context entry.* name
+  const FIELD_EMAIL = "entry.2005620554"; // Email field
+  const FIELD_COMPANY = "entry.1045781291"; // Company field
+  const FIELD_CONTEXT = "entry.1166974658"; // Context field
 
   const submitButton = form.querySelector('button[type="submit"]');
-  let hasConfiguredForm =
-    GOOGLE_FORM_ACTION.includes("YOUR_FORM_ID") === false &&
-    !FIELD_EMAIL.includes("ENTRY_ID") &&
-    !FIELD_COMPANY.includes("ENTRY_ID") &&
-    !FIELD_CONTEXT.includes("ENTRY_ID");
 
   form.addEventListener("submit", (e) => {
     e.preventDefault();
@@ -42,14 +37,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const email = (formData.get("email") || "").toString().trim();
     const company = (formData.get("company") || "").toString().trim();
     const context = (formData.get("context") || "").toString().trim();
-
-    if (!hasConfiguredForm) {
-      // Fallback: if config isn't filled in yet, just open the Google Form URL
-      // (you can replace this with your live form link even before wiring entry IDs).
-      const fallbackUrl = GOOGLE_FORM_ACTION.replace("/formResponse", "/viewform");
-      window.open(fallbackUrl, "_blank");
-      return;
-    }
 
     const googleParams = new URLSearchParams();
     googleParams.append(FIELD_EMAIL, email);
