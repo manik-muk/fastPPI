@@ -1,7 +1,5 @@
 {
-  "input_vars": [
-    "csv_path"
-  ],
+  "input_vars": [],
   "num_outputs": 2,
   "output_names": [
     "output_0",

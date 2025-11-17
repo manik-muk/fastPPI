@@ -70,15 +70,29 @@ def compile_with_clang(c_code: str, output_path: str,
                 c_content = f.read()
                 if 'pandas_c.h' in c_content:
                     link_libs.append("-lpandas_c")
+                    # pandas_c library already links curl and jansson, but we may need them
+                    # for direct linking if using static library
+                    # Check if http_get_json is used (indicates need for curl/jansson)
+                    if 'pandas_http_get_json' in c_content:
+                        link_libs.append("-lcurl")
+                        link_libs.append("-ljansson")
+                        # Add Homebrew library path if available
+                        import subprocess
+                        try:
+                            brew_prefix = subprocess.check_output(['brew', '--prefix'], text=True).strip()
+                            if brew_prefix:
+                                cmd.extend(["-L", f"{brew_prefix}/lib"])
+                        except (subprocess.CalledProcessError, FileNotFoundError):
+                            pass
                 if 'string_c.h' in c_content:
                     link_libs.append("-lstring_c")
-                
-                if link_libs:
-                    # Add library and include paths
-                    if c_lib_path.exists():
-                        cmd.extend(["-L", str(c_lib_path)])
-                    if c_include_path.exists():
-                        cmd.extend(["-I", str(c_include_path)])
+            
+            if link_libs:
+                # Add library and include paths
+                if c_lib_path.exists():
+                    cmd.extend(["-L", str(c_lib_path)])
+                if c_include_path.exists():
+                    cmd.extend(["-I", str(c_include_path)])
         
         # For macOS, add rpath to library directory so @rpath can be resolved
         if sys.platform == "darwin" and c_lib_path and c_lib_path.exists():

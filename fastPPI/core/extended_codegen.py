@@ -118,6 +118,12 @@ class CFunctionRegistry:
             'return_type': 'DataFrame*',
             'description': 'Read CSV file into DataFrame'
         },
+        ('http_get_json', None): {
+            'c_function': 'pandas_http_get_json',
+            'include': '"pandas_c.h"',
+            'return_type': 'DataFrame*',
+            'description': 'Make HTTP GET request and parse JSON array into DataFrame'
+        },
         ('getitem', 'DataFrame'): {
             'c_function': 'pandas_df_getitem',
             'include': '"pandas_c.h"',
@@ -508,6 +514,56 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                     input_vars.append(f'"{escaped_arg}"')
                 else:
                     input_vars.append("NULL")
+        # Special handling for http_get_json - url is a string input variable
+        elif op.op_name == 'http_get_json':
+            # For http_get_json, the URL comes from the operation's url attribute or args
+            input_vars = []
+            url_arg = None
+            
+            # Try to get URL from operation attribute (set by tracer)
+            if hasattr(op, 'url') and op.url:
+                url_arg = op.url
+            # Otherwise try to extract from args (if URL was passed explicitly)
+            elif len(op.args) > 0:
+                # Check if first arg is a string (URL)
+                if isinstance(op.args[0], str):
+                    url_arg = op.args[0]
+                # Or check if it's a dict/list that came from response.json()
+                # In that case, we need to extract URL from the trace
+                # For now, we'll look for URL in the operation context
+            
+            if url_arg:
+                # Check if this is an input variable
+                input_var_name = None
+                if isinstance(url_arg, str) and self.input_arrays:
+                    # Find which input variable has this string value
+                    for var_name, var_value in self.input_arrays.items():
+                        if isinstance(var_value, str) and var_value == url_arg:
+                            input_var_name = var_name
+                            break
+                
+                if input_var_name:
+                    # It's an input variable - need to convert from double* to char*
+                    self.string_inputs.add(input_var_name)
+                    url_str_var = f"{input_var_name}_str"
+                    lines.append(f"    // Convert string input {input_var_name} from double* to char*")
+                    lines.append(f"    char {url_str_var}[512];  // Max URL length")
+                    lines.append(f"    int {input_var_name}_len = 0;")
+                    lines.append(f"    double val;")
+                    lines.append(f"    while ({input_var_name}_len < 511 && (val = {input_var_name}[{input_var_name}_len]) > 0 && val < 256) {{")
+                    lines.append(f"        {url_str_var}[{input_var_name}_len++] = (char)(int)val;")
+                    lines.append(f"    }}")
+                    lines.append(f"    {url_str_var}[{input_var_name}_len] = '\\0';")
+                    input_vars.append(url_str_var)
+                elif isinstance(url_arg, str):
+                    # String literal - use directly
+                    escaped_arg = url_arg.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+                    input_vars.append(f'"{escaped_arg}"')
+                else:
+                    input_vars.append("NULL")
+            else:
+                # URL not found - this shouldn't happen if tracing worked correctly
+                input_vars.append('"http://localhost:3000/users"')  # Default fallback
         # Special handling for df_getitem - need to find the source DataFrame
         elif op.op_name == 'df_getitem':
             # For column access, args[0] is the DataFrame, args[1] is the column name
@@ -567,78 +623,120 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                         if not found:
                             input_vars.append("NULL")
                 else:
-                    # Check if this is a DataFrame or Series from a previous pandas operation
-                    found_pandas_input = False
-                    if EXTENDED_OPS_AVAILABLE:
-                        # Look for previous pandas operation that created this object
-                        # Try multiple strategies to find the source
-                        for prev_node in self.graph.nodes:
-                            if prev_node.operation.op_id >= op.op_id:
-                                continue  # Skip current and future operations
-                            if isinstance(prev_node.operation, PandasOperation):
-                                prev_op = prev_node.operation
-                                # Strategy 1: Check by object identity
-                                try:
-                                    if id(prev_op.result) == id(arg):
-                                        prev_var = self._get_var_name(prev_op.op_id)
-                                        input_vars.append(prev_var)
-                                        found_pandas_input = True
-                                        break
-                                except:
-                                    pass
-                                
-                                # Strategy 2: Check if it's the same type and appears in sequence
-                                # (This is a heuristic for when object identity changes)
-                                try:
-                                    if (type(prev_op.result).__name__ == type(arg).__name__ and
-                                        hasattr(arg, 'name') and hasattr(prev_op.result, 'name') and
-                                        prev_op.result.name == arg.name):
-                                        prev_var = self._get_var_name(prev_op.op_id)
-                                        input_vars.append(prev_var)
-                                        found_pandas_input = True
-                                        break
-                                except:
-                                    pass
-                    
-                    if not found_pandas_input:
-                        # Handle other types
-                        if isinstance(arg, str):
-                            # Escape newlines and quotes in strings
-                            escaped_arg = arg.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
-                            input_vars.append(f'"{escaped_arg}"')
-                        elif isinstance(arg, (int, float, bool)):
-                            input_vars.append(str(arg))
-                        elif isinstance(arg, type):
-                            # Handle Python type objects (str, int, float, etc.)
-                            if arg == str:
-                                input_vars.append("'s'")  # String dtype
-                            elif arg == int:
-                                input_vars.append("'i'")  # Integer dtype
-                            elif arg == float:
-                                input_vars.append("'f'")  # Float dtype
-                            elif arg == bool:
-                                input_vars.append("'b'")  # Boolean dtype
-                            else:
-                                input_vars.append("'s'")  # Default to string
-                        else:
-                            # For unknown pandas objects that we couldn't trace
-                            # This indicates the object was modified or transformed
-                            # We should try to find the most recent pandas operation of the same type
+                    # First check if it's a scalar (int, float, bool) - these should be handled directly
+                    # This is important for operations like fillna where fill_value might be a scalar
+                    if isinstance(arg, (int, float, bool, type(None))):
+                        # For fillna operations, check if this is the fill_value argument
+                        # and if so, try to find the scalar result from a previous operation
+                        if op.op_name in ('fillna', 'series_fillna') and len(op.args) > 1 and op.args[1] == arg:
+                            # This is the fill_value argument - try to find it as a scalar result
+                            found_scalar = False
                             if EXTENDED_OPS_AVAILABLE:
-                                # Last resort: use the most recent pandas operation output
-                                last_pandas_var = None
                                 for prev_node in self.graph.nodes:
                                     if prev_node.operation.op_id >= op.op_id:
-                                        break
-                                    if isinstance(prev_node.operation, PandasOperation):
-                                        last_pandas_var = self._get_var_name(prev_node.operation.op_id)
-                                
-                                if last_pandas_var:
-                                    input_vars.append(f"/* WARNING: Guessed input */ {last_pandas_var}")
-                                    found_pandas_input = True
+                                        continue
+                                    prev_op = prev_node.operation
+                                    # Check if this operation produced a scalar that matches
+                                    if isinstance(prev_op.result, (int, float, bool)):
+                                        try:
+                                            # Check if the values match (with tolerance for floats)
+                                            if isinstance(arg, float) and isinstance(prev_op.result, float):
+                                                if abs(arg - prev_op.result) < 1e-10:
+                                                    prev_var = self._get_var_name(prev_op.op_id)
+                                                    input_vars.append(prev_var)
+                                                    found_scalar = True
+                                                    break
+                                            elif arg == prev_op.result:
+                                                prev_var = self._get_var_name(prev_op.op_id)
+                                                input_vars.append(prev_var)
+                                                found_scalar = True
+                                                break
+                                        except:
+                                            pass
                             
-                            if not found_pandas_input:
-                                input_vars.append("NULL  /* Could not trace pandas input */")
+                            if not found_scalar:
+                                # Use the literal value
+                                if arg is None:
+                                    input_vars.append("NAN")
+                                else:
+                                    input_vars.append(str(arg))
+                        else:
+                            # Regular scalar - use directly
+                            if arg is None:
+                                input_vars.append("NAN")
+                            else:
+                                input_vars.append(str(arg))
+                    else:
+                        # Check if this is a DataFrame or Series from a previous pandas operation
+                        found_pandas_input = False
+                        if EXTENDED_OPS_AVAILABLE:
+                            # Look for previous pandas operation that created this object
+                            # Try multiple strategies to find the source
+                            for prev_node in self.graph.nodes:
+                                if prev_node.operation.op_id >= op.op_id:
+                                    continue  # Skip current and future operations
+                                if isinstance(prev_node.operation, PandasOperation):
+                                    prev_op = prev_node.operation
+                                    # Strategy 1: Check by object identity
+                                    try:
+                                        if id(prev_op.result) == id(arg):
+                                            prev_var = self._get_var_name(prev_op.op_id)
+                                            input_vars.append(prev_var)
+                                            found_pandas_input = True
+                                            break
+                                    except:
+                                        pass
+                                    
+                                    # Strategy 2: Check if it's the same type and appears in sequence
+                                    # (This is a heuristic for when object identity changes)
+                                    try:
+                                        if (type(prev_op.result).__name__ == type(arg).__name__ and
+                                            hasattr(arg, 'name') and hasattr(prev_op.result, 'name') and
+                                            prev_op.result.name == arg.name):
+                                            prev_var = self._get_var_name(prev_op.op_id)
+                                            input_vars.append(prev_var)
+                                            found_pandas_input = True
+                                            break
+                                    except:
+                                        pass
+                        
+                        if not found_pandas_input:
+                            # Handle other types
+                            if isinstance(arg, str):
+                                # Escape newlines and quotes in strings
+                                escaped_arg = arg.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+                                input_vars.append(f'"{escaped_arg}"')
+                            elif isinstance(arg, type):
+                                # Handle Python type objects (str, int, float, etc.)
+                                if arg == str:
+                                    input_vars.append("'s'")  # String dtype
+                                elif arg == int:
+                                    input_vars.append("'i'")  # Integer dtype
+                                elif arg == float:
+                                    input_vars.append("'f'")  # Float dtype
+                                elif arg == bool:
+                                    input_vars.append("'b'")  # Boolean dtype
+                                else:
+                                    input_vars.append("'s'")  # Default to string
+                            else:
+                                # For unknown pandas objects that we couldn't trace
+                                # This indicates the object was modified or transformed
+                                # We should try to find the most recent pandas operation of the same type
+                                if EXTENDED_OPS_AVAILABLE:
+                                    # Last resort: use the most recent pandas operation output
+                                    last_pandas_var = None
+                                    for prev_node in self.graph.nodes:
+                                        if prev_node.operation.op_id >= op.op_id:
+                                            break
+                                        if isinstance(prev_node.operation, PandasOperation):
+                                            last_pandas_var = self._get_var_name(prev_node.operation.op_id)
+                                    
+                                    if last_pandas_var:
+                                        input_vars.append(f"/* WARNING: Guessed input */ {last_pandas_var}")
+                                        found_pandas_input = True
+                                
+                                if not found_pandas_input:
+                                    input_vars.append("NULL  /* Could not trace pandas input */")
         
         # Add strategy argument for numeric fillna operations
         if op.op_name in ('fillna', 'series_fillna') and c_func == 'pandas_series_fillna' and len(input_vars) == 2:

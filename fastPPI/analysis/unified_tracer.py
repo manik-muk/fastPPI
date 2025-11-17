@@ -102,6 +102,13 @@ def trace_unified_execution(code: str, example_inputs: Dict[str, Any],
         exec_globals['pd'] = pd
         exec_globals['pandas'] = pd
     
+    # Add requests module if available (for http_get_json support)
+    try:
+        import requests
+        exec_globals['requests'] = requests
+    except ImportError:
+        pass
+    
     # Add string operation modules
     if STRING_TRACER_AVAILABLE:
         import re

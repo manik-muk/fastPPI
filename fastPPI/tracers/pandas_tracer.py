@@ -85,7 +85,12 @@ class PandasTracer:
             
             # Top-level functions
             'read_csv': pd.read_csv,
+            'DataFrame': pd.DataFrame,  # For patching DataFrame constructor
         }
+        
+        # Track requests.get calls for http_get_json pattern
+        self.pending_http_requests = {}  # response_id -> url
+        self.json_responses = {}  # json_data_id -> response_id (to track which response produced which JSON)
         
         # Patch methods
         pd.DataFrame.mean = self._wrap_method('df_mean', self.original_functions['df_mean'], 'DataFrame')
@@ -110,6 +115,21 @@ class PandasTracer:
         StringMethods.contains = self._wrap_str_method('str_contains', self.original_functions['str_contains'])
         
         pd.read_csv = self._wrap_function('read_csv', self.original_functions['read_csv'])
+        
+        # Patch DataFrame constructor to detect http_get_json pattern
+        pd.DataFrame = self._wrap_dataframe_constructor('DataFrame', self.original_functions['DataFrame'])
+        
+        # Patch requests.get if available
+        try:
+            import requests
+            self.original_functions['requests_get'] = requests.get
+            requests.get = self._wrap_requests_get('requests_get', self.original_functions['requests_get'])
+            # Also patch response.json() method
+            if hasattr(requests.Response, 'json'):
+                self.original_functions['response_json'] = requests.Response.json
+                requests.Response.json = self._wrap_response_json('response_json', self.original_functions['response_json'])
+        except ImportError:
+            pass
         
     def _unpatch_pandas(self):
         """Restore original pandas functions."""
@@ -137,6 +157,21 @@ class PandasTracer:
         StringMethods.contains = self.original_functions['str_contains']
         
         pd.read_csv = self.original_functions['read_csv']
+        pd.DataFrame = self.original_functions['DataFrame']
+        
+        # Restore requests.get if it was patched
+        try:
+            import requests
+            if 'requests_get' in self.original_functions:
+                requests.get = self.original_functions['requests_get']
+            if 'response_json' in self.original_functions:
+                requests.Response.json = self.original_functions['response_json']
+        except ImportError:
+            pass
+        
+        # Clear pending requests
+        self.pending_http_requests = {}
+        self.json_responses = {}
     
     def _wrap_method(self, name: str, original_method: Callable, obj_type: str) -> Callable:
         """Wrap a pandas method to capture its execution."""
@@ -151,6 +186,16 @@ class PandasTracer:
             self.op_counter += 1
             op = PandasOperation(name, original_method, (self_obj,) + args, kwargs, 
                                result, self.op_counter, obj_type)
+            
+            # Register results safely
+            if PANDAS_AVAILABLE and pd is not None:
+                try:
+                    if isinstance(result, pd.DataFrame):
+                        self.dataframe_registry[id(result)] = result
+                    elif isinstance(result, pd.Series):
+                        self.series_registry[id(result)] = result
+                except (TypeError, AttributeError):
+                    pass
             
             # Special handling for apply() with lambda functions
             if name in ('series_apply', 'df_apply') and len(args) > 0:
@@ -177,11 +222,7 @@ class PandasTracer:
             
             self.operations.append(op)
             
-            # Register results
-            if isinstance(result, pd.DataFrame):
-                self.dataframe_registry[id(result)] = result
-            elif isinstance(result, pd.Series):
-                self.series_registry[id(result)] = result
+            # Register results safely (already done above)
                 
             return result
         return wrapped
@@ -256,6 +297,100 @@ class PandasTracer:
             if isinstance(result, pd.DataFrame):
                 self.dataframe_registry[id(result)] = result
                 
+            return result
+        return wrapped
+    
+    def _wrap_requests_get(self, name: str, original_func: Callable) -> Callable:
+        """Wrap requests.get to track HTTP requests for http_get_json pattern."""
+        def wrapped(*args, **kwargs):
+            if not self.enabled:
+                return original_func(*args, **kwargs)
+            
+            # Execute the original function
+            response = original_func(*args, **kwargs)
+            
+            # Store the URL for this response
+            if len(args) > 0 and isinstance(args[0], str):
+                url = args[0]
+                self.pending_http_requests[id(response)] = url
+            
+            return response
+        return wrapped
+    
+    def _wrap_response_json(self, name: str, original_func: Callable) -> Callable:
+        """Wrap response.json() to track JSON data from HTTP responses."""
+        def wrapped(self_obj, *args, **kwargs):
+            if not self.enabled:
+                return original_func(self_obj, *args, **kwargs)
+            
+            # Execute the original function
+            json_data = original_func(self_obj, *args, **kwargs)
+            
+            # Track which response produced this JSON data
+            response_id = id(self_obj)
+            json_id = id(json_data)
+            self.json_responses[json_id] = response_id
+            
+            return json_data
+        return wrapped
+    
+    def _wrap_dataframe_constructor(self, name: str, original_func: Callable) -> Callable:
+        """Wrap DataFrame constructor to detect http_get_json pattern."""
+        def wrapped(*args, **kwargs):
+            if not self.enabled:
+                return original_func(*args, **kwargs)
+            
+            # Check if this is the pattern: pd.DataFrame(response.json())
+            # We detect this by checking if args[0] is a list/dict and if we can
+            # trace it back to a requests.get() call
+            url = None
+            if len(args) > 0:
+                data = args[0]
+                # Check if data looks like JSON (list or dict)
+                if isinstance(data, (list, dict)):
+                    # Check if this JSON data came from a response.json() call
+                    json_id = id(data)
+                    if json_id in self.json_responses:
+                        response_id = self.json_responses[json_id]
+                        if response_id in self.pending_http_requests:
+                            url = self.pending_http_requests[response_id]
+                    # Also check if there's a URL in kwargs (for explicit passing)
+                    elif 'url' in kwargs:
+                        url = kwargs['url']
+            
+            # Execute the original function
+            result = original_func(*args, **kwargs)
+            
+            # If we detected an HTTP request pattern, create http_get_json operation
+            if url or (len(args) > 0 and isinstance(args[0], (list, dict)) and 
+                      isinstance(args[0], list) and len(args[0]) > 0 and 
+                      isinstance(args[0][0], dict)):
+                self.op_counter += 1
+                # Try to extract URL from kwargs or use placeholder
+                extracted_url = url if url else (kwargs.get('url', '') if 'url' in kwargs else None)
+                if not extracted_url:
+                    # Try to find URL from pending requests by checking if this looks like JSON response
+                    # For now, we'll use a placeholder and let codegen extract it from the source
+                    extracted_url = None  # Will be extracted during codegen
+                
+                op = PandasOperation('http_get_json', original_func, args, kwargs, result, self.op_counter)
+                op.url = extracted_url  # Store URL if we found it
+                op.obj_type = 'DataFrame'
+                self.operations.append(op)
+                
+                if PANDAS_AVAILABLE and pd is not None:
+                    try:
+                        if isinstance(result, pd.DataFrame):
+                            self.dataframe_registry[id(result)] = result
+                    except (TypeError, AttributeError):
+                        pass
+                
+                return result
+            
+            # Normal DataFrame construction - record as regular operation
+            # (We skip tracing normal DataFrame construction to avoid noise)
+            # Only trace if it's a known pattern like read_csv result
+            
             return result
         return wrapped
 

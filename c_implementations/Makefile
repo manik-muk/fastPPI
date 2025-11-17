@@ -3,6 +3,13 @@
 CC = clang
 CFLAGS = -Wall -Wextra -O3 -fPIC -std=c11
 INCLUDES = -Iinclude
+LDFLAGS = 
+# Add Homebrew paths for jansson and curl (if available)
+BREW_PREFIX := $(shell brew --prefix 2>/dev/null || echo "")
+ifneq ($(BREW_PREFIX),)
+    INCLUDES += -I$(BREW_PREFIX)/include
+    LDFLAGS += -L$(BREW_PREFIX)/lib
+endif
 LIB_DIR = lib
 OBJ_DIR = obj
 
@@ -49,6 +56,7 @@ shared: $(LIB_DIR)/libpandas_c$(SHARED_EXT) $(LIB_DIR)/libstring_c$(SHARED_EXT)
 $(PANDAS_LIB): $(PANDAS_OBJS)
 	@mkdir -p $(LIB_DIR)
 	ar rcs $@ $^
+	# Note: For static library, curl and jansson need to be linked at final link time
 
 # String static library
 $(STRING_LIB): $(STRING_OBJS)
@@ -58,7 +66,7 @@ $(STRING_LIB): $(STRING_OBJS)
 # Pandas shared library
 $(LIB_DIR)/libpandas_c$(SHARED_EXT): $(PANDAS_OBJS)
 	@mkdir -p $(LIB_DIR)
-	$(CC) $(SHARED_FLAGS) -o $@ $^
+	$(CC) $(SHARED_FLAGS) $(LDFLAGS) -o $@ $^ -lcurl -ljansson
 
 # String shared library
 $(LIB_DIR)/libstring_c$(SHARED_EXT): $(STRING_OBJS)

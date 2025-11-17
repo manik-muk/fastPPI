@@ -31,6 +31,13 @@ DataFrame* pandas_df_fillna(const DataFrame* df, const char* strategy, double fi
 DataFrame* pandas_read_csv(const char* filename);
 
 /**
+ * Make HTTP GET request and parse JSON array into DataFrame.
+ * URL: HTTP endpoint URL
+ * Returns DataFrame* with data from JSON array, or NULL on error.
+ */
+DataFrame* pandas_http_get_json(const char* url);
+
+/**
  * Get column from DataFrame by name.
  * Returns Series containing the column data.
  */
