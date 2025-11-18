@@ -174,8 +174,41 @@ class PandasTracer:
             if not self.enabled:
                 return original_method(self_obj, *args, **kwargs)
             
+            # For apply operations, temporarily disable NumPy tracing
+            # to avoid capturing individual element operations (e.g., np.log for each element)
+            # We only want to capture the apply operation itself, not the operations inside the lambda
+            numpy_tracer_enabled_state = None
+            if name in ('series_apply', 'df_apply'):
+                # Temporarily disable NumPy tracing during apply execution
+                # All NumPy functions share the same ExecutionTracer instance
+                try:
+                    import numpy as np
+                    # Get the tracer instance from any numpy function (they all share the same one)
+                    func = getattr(np, 'log', None)
+                    if func is not None and hasattr(func, '_tracer'):
+                        # func._tracer is the ExecutionTracer instance
+                        tracer_instance = func._tracer
+                        if hasattr(tracer_instance, 'enabled'):
+                            numpy_tracer_enabled_state = tracer_instance.enabled
+                            tracer_instance.enabled = False
+                except (AttributeError, ImportError, TypeError):
+                    # If we can't disable numpy tracing, continue anyway
+                    numpy_tracer_enabled_state = None
+            
             # Execute the original method
             result = original_method(self_obj, *args, **kwargs)
+            
+            # Re-enable NumPy tracing if we disabled it
+            if numpy_tracer_enabled_state is not None:
+                try:
+                    import numpy as np
+                    func = getattr(np, 'log', None)
+                    if func is not None and hasattr(func, '_tracer'):
+                        tracer_instance = func._tracer
+                        if hasattr(tracer_instance, 'enabled'):
+                            tracer_instance.enabled = numpy_tracer_enabled_state
+                except (AttributeError, ImportError, TypeError):
+                    pass
             
             # Record the operation
             self.op_counter += 1

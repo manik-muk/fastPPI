@@ -301,30 +301,44 @@ class CCodeGenerator:
                 lines.append(f"    {result_var} = 0.0;")
         
         elif op.op_name == "max":
-            if isinstance(op.args[0], np.ndarray):
-                size = np.prod(op.args[0].shape)
-                # Variable already declared upfront
-                lines.append(f"    {result_var} = {input_vars[0]}[0];")
-                lines.append(f"    for (int i = 1; i < {size}; i++) {{")
-                lines.append(f"        if ({input_vars[0]}[i] > {result_var}) {{")
-                lines.append(f"            {result_var} = {input_vars[0]}[i];")
-                lines.append(f"        }}")
-                lines.append(f"    }}")
+            # Check if input is resolved
+            if len(input_vars) > 0 and input_vars[0] != "NULL":
+                if isinstance(op.args[0], np.ndarray):
+                    size = np.prod(op.args[0].shape)
+                    # Variable already declared upfront
+                    lines.append(f"    {result_var} = {input_vars[0]}[0];")
+                    lines.append(f"    for (int i = 1; i < {size}; i++) {{")
+                    lines.append(f"        if ({input_vars[0]}[i] > {result_var}) {{")
+                    lines.append(f"            {result_var} = {input_vars[0]}[i];")
+                    lines.append(f"        }}")
+                    lines.append(f"    }}")
+                else:
+                    lines.append(f"    {result_var} = {input_vars[0]};")
             else:
-                lines.append(f"    {result_var} = {input_vars[0]};")
+                # Skip max operation if inputs not resolved
+                lines.append(f"    // Skipping max operation - inputs not resolved")
+                if result_var not in allocated_vars:
+                    lines.append(f"    {result_var} = 0.0;")
         
         elif op.op_name == "min":
-            if isinstance(op.args[0], np.ndarray):
-                size = np.prod(op.args[0].shape)
-                # Variable already declared upfront
-                lines.append(f"    {result_var} = {input_vars[0]}[0];")
-                lines.append(f"    for (int i = 1; i < {size}; i++) {{")
-                lines.append(f"        if ({input_vars[0]}[i] < {result_var}) {{")
-                lines.append(f"            {result_var} = {input_vars[0]}[i];")
-                lines.append(f"        }}")
-                lines.append(f"    }}")
+            # Check if input is resolved
+            if len(input_vars) > 0 and input_vars[0] != "NULL":
+                if isinstance(op.args[0], np.ndarray):
+                    size = np.prod(op.args[0].shape)
+                    # Variable already declared upfront
+                    lines.append(f"    {result_var} = {input_vars[0]}[0];")
+                    lines.append(f"    for (int i = 1; i < {size}; i++) {{")
+                    lines.append(f"        if ({input_vars[0]}[i] < {result_var}) {{")
+                    lines.append(f"            {result_var} = {input_vars[0]}[i];")
+                    lines.append(f"        }}")
+                    lines.append(f"    }}")
+                else:
+                    lines.append(f"    {result_var} = {input_vars[0]};")
             else:
-                lines.append(f"    {result_var} = {input_vars[0]};")
+                # Skip min operation if inputs not resolved
+                lines.append(f"    // Skipping min operation - inputs not resolved")
+                if result_var not in allocated_vars:
+                    lines.append(f"    {result_var} = 0.0;")
         
         elif op.op_name == "exp":
             if op.result.shape and len(op.result.shape) > 0:

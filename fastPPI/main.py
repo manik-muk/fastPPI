@@ -297,6 +297,13 @@ def main():
         # This captures all final results from the traced operations
         leaf_nodes = [n for n in graph.nodes if len(n.outputs) == 0]
         
+        # Perform dead code elimination
+        if args.verbose:
+            print("Performing dead code elimination...")
+        removed_count = graph.eliminate_dead_code()
+        if args.verbose and removed_count > 0:
+            print(f"Removed {removed_count} unused operations")
+        
         # Check if we have batch string processing
         has_batch_processing = False
         if example_inputs:

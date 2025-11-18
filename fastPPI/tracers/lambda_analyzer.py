@@ -336,14 +336,19 @@ class LambdaAnalyzer:
             false_stack = []
             false_start_offset = instructions[cond_jump_idx].arg if hasattr(instructions[cond_jump_idx], 'arg') else None
             
-            # Find the instruction with the matching offset
+            # Find the instruction with the matching offset (the false branch target)
             false_start_idx = true_branch_end + 1
             if false_start_offset is not None:
+                # Find the instruction with the matching offset
                 for i, instr in enumerate(instructions):
                     if instr.offset == false_start_offset:
                         false_start_idx = i
                         break
+                # If we couldn't find it by offset, use the instruction after true_branch_end
+                if false_start_idx == true_branch_end + 1 and false_start_idx >= len(instructions):
+                    false_start_idx = true_branch_end + 1
             
+            # Execute false branch instructions until RETURN_VALUE
             for i in range(false_start_idx, len(instructions)):
                 instr = instructions[i]
                 if instr.opname == 'RETURN_VALUE':
@@ -352,7 +357,17 @@ class LambdaAnalyzer:
                     instr, false_stack, param_name, constants, names, external_vars
                 )
             
+            # Get false branch value - if stack is empty, default to "0"
             false_val = false_stack.pop() if false_stack else "0"
+            
+            # Safety check: if false_val is somehow the same as true_val, something went wrong
+            # This can happen if the false branch execution didn't work correctly
+            if false_val == true_val and true_val != "0":
+                # Try to find the false branch value by looking at the instruction after true_branch_end
+                if true_branch_end + 1 < len(instructions):
+                    next_instr = instructions[true_branch_end + 1]
+                    if next_instr.opname == 'LOAD_CONST':
+                        false_val = str(next_instr.argval) if next_instr.argval is not None else "0"
             
             # Construct ternary
             result = f"({condition} ? {true_val} : {false_val})"
@@ -448,17 +463,34 @@ class LambdaAnalyzer:
                 if stack:
                     func_expr = stack.pop()
                     
-                    if 'pd.notnull' in func_expr or 'pd.notna' in func_expr:
-                        if len(args) == 1:
-                            stack.append(f"(!isnan({args[0]}))")
-                            requires_null = True
-                    elif 'pd.isnull' in func_expr or 'pd.isna' in func_expr:
-                        if len(args) == 1:
-                            stack.append(f"isnan({args[0]})")
-                            requires_null = True
-                    elif func_expr == 'abs':
-                        if len(args) == 1:
-                            stack.append(f"fabs({args[0]})")
+                    # Handle NumPy functions (np.log, np.sqrt, etc.)
+                    if isinstance(func_expr, str):
+                        if func_expr == 'np.log' or func_expr.endswith('.log'):
+                            if len(args) == 1:
+                                stack.append(f"log({args[0]})")
+                        elif func_expr == 'np.sqrt' or func_expr.endswith('.sqrt'):
+                            if len(args) == 1:
+                                stack.append(f"sqrt({args[0]})")
+                        elif func_expr == 'np.exp' or func_expr.endswith('.exp'):
+                            if len(args) == 1:
+                                stack.append(f"exp({args[0]})")
+                        elif func_expr == 'np.abs' or func_expr.endswith('.abs'):
+                            if len(args) == 1:
+                                stack.append(f"fabs({args[0]})")
+                        elif 'pd.notnull' in func_expr or 'pd.notna' in func_expr:
+                            if len(args) == 1:
+                                stack.append(f"(!isnan({args[0]}))")
+                                requires_null = True
+                        elif 'pd.isnull' in func_expr or 'pd.isna' in func_expr:
+                            if len(args) == 1:
+                                stack.append(f"isnan({args[0]})")
+                                requires_null = True
+                        elif func_expr == 'abs':
+                            if len(args) == 1:
+                                stack.append(f"fabs({args[0]})")
+                        else:
+                            args_str = ', '.join(args)
+                            stack.append(f"{func_expr}({args_str})")
                     else:
                         args_str = ', '.join(args)
                         stack.append(f"{func_expr}({args_str})")

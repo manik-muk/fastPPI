@@ -49,6 +49,10 @@ def compile_with_clang(c_code: str, output_path: str,
         # Compile as shared library (.so/.dylib/.dll)
         cmd = ["clang", optimization]
         
+        # Add CPU-specific optimizations for better performance
+        # -march=native enables all CPU-specific optimizations (SIMD, instruction sets)
+        cmd.append("-march=native")
+        
         if additional_flags:
             cmd.extend(additional_flags)
         

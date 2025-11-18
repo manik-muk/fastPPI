@@ -265,6 +265,10 @@ class ExtendedCCodeGenerator(CCodeGenerator):
         self.dataframe_vars: Dict[int, str] = {}  # op_id -> C variable name for DataFrame
         self.series_vars: Dict[int, str] = {}     # op_id -> C variable name for Series
         
+        # Track column access cache: (df_var, column_name) -> series_var
+        # This allows us to reuse variables for redundant column accesses
+        self.column_access_cache: Dict[Tuple[str, str], str] = {}  # (df_var, column_name) -> series_var
+        
         # Track which includes we need
         self.pandas_include = False
         self.string_include = False
@@ -333,10 +337,20 @@ class ExtendedCCodeGenerator(CCodeGenerator):
         requires_null_check = lambda_info.get('requires_null_check', False)
         external_vars = lambda_info.get('external_vars', {})
         
+        # Filter out NumPy and pandas module references (np, pd, log, sqrt, etc.)
+        # These are not actual external variables but module/function references
+        filtered_external_vars = {}
+        numpy_function_names = {'log', 'sqrt', 'exp', 'abs', 'sin', 'cos', 'tan', 'max', 'min', 'sum', 'mean', 'std'}
+        for var_name, var_value in external_vars.items():
+            # Skip if it's a NumPy/pandas module reference or a standard function name
+            if var_name in ('np', 'pd', 'numpy', 'pandas') or var_name in numpy_function_names:
+                continue
+            filtered_external_vars[var_name] = var_value
+        
         # Extract external variables and declare them as constants in C
         # These are variables captured from the closure (e.g., age_mean)
         external_var_declarations = []
-        for var_name, var_value in external_vars.items():
+        for var_name, var_value in filtered_external_vars.items():
             if isinstance(var_value, (int, float)):
                 external_var_declarations.append(f"    const double {var_name} = {var_value};")
             elif isinstance(var_value, bool):
@@ -358,9 +372,11 @@ class ExtendedCCodeGenerator(CCodeGenerator):
         import re
         var_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
         potential_vars = set(re.findall(var_pattern, c_expr))
-        # Exclude known C keywords and functions, and the lambda parameter
+        # Exclude known C keywords, functions, and the lambda parameter
+        # Also exclude NumPy function names that might appear in the expression
         c_keywords = {'if', 'else', 'isnan', 'is_null', 'true', 'false', 'NULL', 'NAN', 'INFINITY', 'abs', 'fabs'}
-        potential_vars = {v for v in potential_vars if v not in c_keywords and v != param_name}
+        c_keywords.update(numpy_function_names)  # Add NumPy function names to exclusion list
+        potential_vars = {v for v in potential_vars if v not in c_keywords and v != param_name and v not in filtered_external_vars}
         
         # Search graph for scalar operations (like mean) that might match variable names
         for var_name in potential_vars:
@@ -379,7 +395,7 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                             # Use the scalar value
                             var_value = float(prev_op.result)
                             external_var_declarations.append(f"    const double {var_name} = {var_value};")
-                            external_vars[var_name] = var_value  # Add for reference
+                            filtered_external_vars[var_name] = var_value  # Add for reference
                             break
                     # Also check for pandas Series.mean() results
                     try:
@@ -403,7 +419,7 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                                     else:
                                         continue
                                     external_var_declarations.append(f"    const double {var_name} = {var_value};")
-                                    external_vars[var_name] = var_value
+                                    filtered_external_vars[var_name] = var_value
                                     break
                                 except:
                                     pass
@@ -1028,9 +1044,61 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                         if not found:
                             input_vars.append("NULL")
                 else:
-                    # First check if it's a scalar (int, float, bool) - these should be handled directly
+                    # First, check if this argument is a scalar result from a previous operation
+                    # This handles cases like fillna(df['rating'].mean()) where mean() returns a scalar
+                    found_scalar_op = False
+                    # Check if arg is the result of a previous operation that returns a scalar
+                    # Check both PandasOperations and regular Operations (mean might be either)
+                    for prev_node in self.graph.nodes:
+                        if prev_node.operation.op_id >= op.op_id:
+                            continue
+                        prev_op = prev_node.operation
+                        
+                        # Check if this operation produced a scalar result
+                        # This includes pandas operations like mean(), median(), sum() that return scalars
+                        is_scalar_result = False
+                        try:
+                            # Check if result is a scalar type
+                            if isinstance(prev_op.result, (int, float, bool, np.number)):
+                                is_scalar_result = True
+                            # Also check if it's a 0-d numpy array (scalar)
+                            elif isinstance(prev_op.result, np.ndarray) and prev_op.result.shape == ():
+                                is_scalar_result = True
+                        except:
+                            pass
+                        
+                        if is_scalar_result:
+                            # Check if the result matches (by identity first, then by value)
+                            try:
+                                if id(prev_op.result) == id(arg):
+                                    # Found by identity - this is the result we want
+                                    prev_var = self._get_var_name(prev_op.op_id)
+                                    input_vars.append(prev_var)
+                                    found_scalar_op = True
+                                    break
+                            except:
+                                pass
+                            
+                            # Also check by value (for cases where identity doesn't match)
+                            try:
+                                if isinstance(prev_op.result, (int, float, bool, np.number)) and isinstance(arg, (int, float, bool, np.number)):
+                                    # Convert to float for comparison
+                                    prev_val = float(prev_op.result)
+                                    arg_val = float(arg)
+                                    if abs(prev_val - arg_val) < 1e-10:
+                                        prev_var = self._get_var_name(prev_op.op_id)
+                                        input_vars.append(prev_var)
+                                        found_scalar_op = True
+                                        break
+                            except:
+                                pass
+                    
+                    if found_scalar_op:
+                        continue  # Already handled
+                    
+                    # Check if it's a scalar (int, float, bool) - these should be handled directly
                     # This is important for operations like fillna where fill_value might be a scalar
-                    if isinstance(arg, (int, float, bool, type(None))):
+                    if isinstance(arg, (int, float, bool, type(None), np.number)):
                         # For fillna operations, check if this is the fill_value argument
                         # and if so, try to find the scalar result from a previous operation
                         if op.op_name in ('fillna', 'series_fillna') and len(op.args) > 1 and op.args[1] == arg:
@@ -1042,16 +1110,12 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                                         continue
                                     prev_op = prev_node.operation
                                     # Check if this operation produced a scalar that matches
-                                    if isinstance(prev_op.result, (int, float, bool)):
+                                    if isinstance(prev_op.result, (int, float, bool, np.number)):
                                         try:
                                             # Check if the values match (with tolerance for floats)
-                                            if isinstance(arg, float) and isinstance(prev_op.result, float):
-                                                if abs(arg - prev_op.result) < 1e-10:
-                                                    prev_var = self._get_var_name(prev_op.op_id)
-                                                    input_vars.append(prev_var)
-                                                    found_scalar = True
-                                                    break
-                                            elif arg == prev_op.result:
+                                            arg_val = float(arg)
+                                            prev_val = float(prev_op.result)
+                                            if abs(arg_val - prev_val) < 1e-10:
                                                 prev_var = self._get_var_name(prev_op.op_id)
                                                 input_vars.append(prev_var)
                                                 found_scalar = True
@@ -1064,13 +1128,13 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                                 if arg is None:
                                     input_vars.append("NAN")
                                 else:
-                                    input_vars.append(str(arg))
+                                    input_vars.append(str(float(arg)) if isinstance(arg, np.number) else str(arg))
                         else:
                             # Regular scalar - use directly
                             if arg is None:
                                 input_vars.append("NAN")
                             else:
-                                input_vars.append(str(arg))
+                                input_vars.append(str(float(arg)) if isinstance(arg, np.number) else str(arg))
                     else:
                         # Check if this is a DataFrame or Series from a previous pandas operation
                         found_pandas_input = False
@@ -1153,6 +1217,28 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                     strategy = 'constant'  # Default to constant for unknown strategies
                 input_vars.append(f'"{strategy}"')  # Add strategy as string argument
         
+        # Check for cached column access (df_getitem optimization)
+        cached_var = None
+        if op.op_name == 'df_getitem' and len(input_vars) >= 2:
+            # input_vars[0] is the DataFrame variable, input_vars[1] is the column name (as string)
+            df_var = input_vars[0]
+            column_name_str = input_vars[1]
+            # Extract column name from string literal (remove quotes)
+            if column_name_str.startswith('"') and column_name_str.endswith('"'):
+                column_name = column_name_str[1:-1]
+                cache_key = (df_var, column_name)
+                if cache_key in self.column_access_cache:
+                    cached_var = self.column_access_cache[cache_key]
+                    # Map this operation's variable to the cached variable
+                    # This way, _get_var_name(op.op_id) will return the cached variable name
+                    self.variable_map[op.op_id] = cached_var
+                    # Register in series_vars so later operations can find it
+                    self.series_vars[op.op_id] = cached_var
+                    # Add comment explaining the optimization (no code generation needed)
+                    lines.append(f"    // Reusing cached column access: {df_var}[\"{column_name}\"] -> {cached_var}")
+                    # Return early - no need to generate any code for this operation
+                    return lines
+        
         # Generate function call - make sure variable is declared correctly
         if return_type.endswith('*'):
             # Pointer return type - declare if not already declared
@@ -1162,7 +1248,15 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                     self.dataframe_vars[op.op_id] = result_var
                     allocated_vars.add(result_var)
                 elif return_type == "Series*":
+                    # Generate normal function call
                     lines.append(f"    Series* {result_var} = {c_func}({', '.join(input_vars)});")
+                    # Cache this column access for future use
+                    if op.op_name == 'df_getitem' and len(input_vars) >= 2:
+                        df_var = input_vars[0]
+                        column_name_str = input_vars[1]
+                        if column_name_str.startswith('"') and column_name_str.endswith('"'):
+                            column_name = column_name_str[1:-1]
+                            self.column_access_cache[(df_var, column_name)] = result_var
                     # Register Series* variables so they can be found by later operations (e.g., lambda apply, get_dummies)
                     # This is crucial for df_getitem results to be found by lambda operations
                     self.series_vars[op.op_id] = result_var
@@ -1570,6 +1664,8 @@ class ExtendedCCodeGenerator(CCodeGenerator):
             lines.append("")
         
         # Generate operation code - only process each operation once
+        # Track which operations successfully generated code
+        successfully_generated: Set[int] = set()
         processed_ops: Set[int] = set()
         for node in sorted_nodes:
             op_id = node.operation.op_id
@@ -1580,6 +1676,25 @@ class ExtendedCCodeGenerator(CCodeGenerator):
             # For batch processing, we need to modify how we generate code
             # String operations should use current_text instead of parsing from input
             op_lines = self._generate_operation_code(node, allocated_vars, declared_scalars)
+            
+            # Check if operation successfully generated code (not just a skip comment)
+            if op_lines:
+                # Check if it's not just a skip comment
+                op_code = '\n'.join(op_lines)
+                if 'Skipping' not in op_code and 'inputs not resolved' not in op_code:
+                    # Operation generated actual code
+                    var_name = self._get_var_name(op_id)
+                    # Check if variable was actually declared/allocated
+                    if var_name in allocated_vars or var_name in declared_scalars:
+                        successfully_generated.add(op_id)
+                    # Also check if it's a pandas operation that was handled
+                    op = node.operation
+                    if EXTENDED_OPS_AVAILABLE and isinstance(op, PandasOperation):
+                        if op.op_id in self.dataframe_vars or op.op_id in self.series_vars:
+                            successfully_generated.add(op_id)
+                    elif STRING_OPS_AVAILABLE and isinstance(op, StringOperation):
+                        # String operations that generated code are successful
+                        successfully_generated.add(op_id)
             
             # If batch processing and this is a string operation that uses the batch input,
             # we need to replace the input conversion with current_text
@@ -1673,6 +1788,14 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                 continue
             seen_outputs.add(op_id)
             
+            # Skip outputs for operations that didn't successfully generate code
+            if op_id not in successfully_generated:
+                # Check if variable was at least declared/allocated (might be from a dependency)
+                output_var = self._get_var_name(op.op_id)
+                if output_var not in allocated_vars and output_var not in declared_scalars:
+                    # Variable was never declared - skip this output
+                    continue
+            
             output_var = self._get_var_name(op.op_id)
             
             # For batch processing, if this output is in batch_output_vars, use the batch array
@@ -1735,21 +1858,27 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                     # Extract numeric data from DataFrame
                     df_var = self.dataframe_vars[op.op_id]
                     
-                    # Generate extraction code with NULL check
+                    # Check if we've already extracted from this DataFrame (for cached operations)
                     extracted_var = f"{df_var}_extracted"
-                    lines.append(f"    // Extract numeric data from DataFrame {df_var}")
-                    lines.append(f"    int64_t {extracted_var}_length = 0;")
-                    lines.append(f"    double* {extracted_var} = NULL;")
-                    lines.append(f"    if ({df_var} != NULL) {{")
-                    lines.append(f"        {extracted_var} = dataframe_to_array({df_var}, &{extracted_var}_length);")
-                    lines.append(f"    }}")
-                    lines.append(f"    if (!{extracted_var}) {{")
-                    lines.append(f"        {extracted_var} = (double*)malloc(sizeof(double));")
-                    lines.append(f"        {extracted_var}[0] = NAN;")
-                    lines.append(f"        {extracted_var}_length = 1;")
-                    lines.append(f"    }}")
-                    lines.append(f"    outputs[{output_index}] = {extracted_var};")
-                    allocated_vars.add(extracted_var)
+                    if extracted_var in allocated_vars:
+                        # Already extracted - just reuse the existing extraction
+                        lines.append(f"    // Reusing existing extraction from DataFrame {df_var}")
+                        lines.append(f"    outputs[{output_index}] = {extracted_var};")
+                    else:
+                        # Generate extraction code with NULL check
+                        lines.append(f"    // Extract numeric data from DataFrame {df_var}")
+                        lines.append(f"    int64_t {extracted_var}_length = 0;")
+                        lines.append(f"    double* {extracted_var} = NULL;")
+                        lines.append(f"    if ({df_var} != NULL) {{")
+                        lines.append(f"        {extracted_var} = dataframe_to_array({df_var}, &{extracted_var}_length);")
+                        lines.append(f"    }}")
+                        lines.append(f"    if (!{extracted_var}) {{")
+                        lines.append(f"        {extracted_var} = (double*)malloc(sizeof(double));")
+                        lines.append(f"        {extracted_var}[0] = NAN;")
+                        lines.append(f"        {extracted_var}_length = 1;")
+                        lines.append(f"    }}")
+                        lines.append(f"    outputs[{output_index}] = {extracted_var};")
+                        allocated_vars.add(extracted_var)
                     output_index += 1
                     continue
                 
@@ -1757,18 +1886,24 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                 if op.op_id in self.series_vars:
                     series_var = self.series_vars[op.op_id]
                     
-                    # Generate extraction code
+                    # Check if we've already extracted from this Series (for cached column access)
                     extracted_var = f"{series_var}_extracted"
-                    lines.append(f"    // Extract numeric data from Series {series_var}")
-                    lines.append(f"    int64_t {extracted_var}_length;")
-                    lines.append(f"    double* {extracted_var} = series_to_array({series_var}, &{extracted_var}_length);")
-                    lines.append(f"    if (!{extracted_var}) {{")
-                    lines.append(f"        {extracted_var} = (double*)malloc(sizeof(double));")
-                    lines.append(f"        {extracted_var}[0] = NAN;")
-                    lines.append(f"        {extracted_var}_length = 1;")
-                    lines.append(f"    }}")
-                    lines.append(f"    outputs[{output_index}] = {extracted_var};")
-                    allocated_vars.add(extracted_var)
+                    if extracted_var in allocated_vars:
+                        # Already extracted - just reuse the existing extraction
+                        lines.append(f"    // Reusing existing extraction from Series {series_var}")
+                        lines.append(f"    outputs[{output_index}] = {extracted_var};")
+                    else:
+                        # Generate extraction code
+                        lines.append(f"    // Extract numeric data from Series {series_var}")
+                        lines.append(f"    int64_t {extracted_var}_length;")
+                        lines.append(f"    double* {extracted_var} = series_to_array({series_var}, &{extracted_var}_length);")
+                        lines.append(f"    if (!{extracted_var}) {{")
+                        lines.append(f"        {extracted_var} = (double*)malloc(sizeof(double));")
+                        lines.append(f"        {extracted_var}[0] = NAN;")
+                        lines.append(f"        {extracted_var}_length = 1;")
+                        lines.append(f"    }}")
+                        lines.append(f"    outputs[{output_index}] = {extracted_var};")
+                        allocated_vars.add(extracted_var)
                     output_index += 1
                     continue
                 
@@ -1789,11 +1924,10 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                 # Variable is an array (double*)
                 lines.append(f"    outputs[{output_index}] = {output_var};")
             else:
-                # Unknown variable - treat as scalar
-                scalar_var = f"{output_var}_output"
-                lines.append(f"    double* {scalar_var} = (double*)malloc(sizeof(double));")
-                lines.append(f"    {scalar_var}[0] = {output_var};")
-                lines.append(f"    outputs[{output_index}] = {scalar_var};")
+                # Unknown variable - this shouldn't happen if we filtered correctly above
+                # But if it does, skip it to avoid compilation errors
+                # Don't generate output code for undeclared variables
+                continue
             output_index += 1
         
         lines.append("}")

@@ -10,6 +10,9 @@ df = pd.DataFrame(response.json())
 # PANDAS-SPECIFIC PREPROCESSING
 # -----------------------------
 
+# 5. Fill missing categorical values
+df["city"] = df["city"].fillna("unknown")
+
 # 1. Normalize the string field to lowercase
 df["city"] = df["city"].astype(str).str.lower()
 
@@ -26,9 +29,6 @@ df["age_centered"] = df["age"] - age_mean
 
 # 4. Drop rows with negative or corrupted values (example)
 df = df[df["income"].isna() | (df["income"] >= 0)]
-
-# 5. Fill missing categorical values (skip for now to avoid compilation issues)
-# df["city"] = df["city"].fillna("unknown")
 
 # Return processed data
 X = df.drop(columns=["purchase_amount"])
