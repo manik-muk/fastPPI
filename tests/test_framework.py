@@ -6,12 +6,10 @@ import os
 import sys
 import tempfile
 import subprocess
-import ctypes
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
-import shutil
 
 
 class FastPPITestFramework:
@@ -84,20 +82,6 @@ class FastPPITestFramework:
             # Cleanup temp Python file
             if os.path.exists(python_file):
                 os.unlink(python_file)
-    
-    def load_c_binary(self, binary_path: str):
-        """Load and configure a C binary."""
-        lib = ctypes.CDLL(binary_path)
-        
-        lib.preprocess.argtypes = [
-            ctypes.POINTER(ctypes.POINTER(ctypes.c_double)),
-            ctypes.c_int,
-            ctypes.POINTER(ctypes.POINTER(ctypes.c_double)),
-            ctypes.c_int
-        ]
-        lib.preprocess.restype = None
-        
-        return lib
     
     def run_python_code(self, python_code: str, inputs: Dict[str, Any] = None) -> Any:
         """Execute Python code and return results."""

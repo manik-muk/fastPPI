@@ -8,7 +8,6 @@ __version__ = "0.2.0"
 
 # Core functionality
 from .core import compile_to_binary, generate_c_code, build_computational_graph
-from .core.runner import run_binary, BinaryRunner
 from .tracers import trace_execution
 
 # Extended functionality for pandas
@@ -28,8 +27,6 @@ __all__ = [
     "trace_execution",
     "generate_c_code",
     "build_computational_graph",
-    "run_binary",
-    "BinaryRunner",
 ]
 
 if EXTENDED_SUPPORT:

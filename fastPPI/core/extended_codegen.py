@@ -154,6 +154,12 @@ class CFunctionRegistry:
             'return_type': 'DataFrame*',
             'description': 'Group DataFrame by column (simplified)'
         },
+        ('get_dummies', None): {
+            'c_function': 'pandas_series_get_dummies',
+            'include': '"pandas_c.h"',
+            'return_type': 'DataFrame*',
+            'description': 'Convert categorical Series to dummy/indicator variables'
+        },
         
         # String operations
         ('re_search', None): {
@@ -295,14 +301,27 @@ class ExtendedCCodeGenerator(CCodeGenerator):
         input_series_var = None
         if len(op.args) > 0:
             series_obj = op.args[0]
+            # First check if it's in series_vars (from df_getitem or Series constructor)
             for prev_node in reversed(list(self.graph.nodes)):
                 if prev_node.operation.op_id >= op.op_id:
                     continue
                 if isinstance(prev_node.operation, PandasOperation):
                     prev_op = prev_node.operation
-                    if id(prev_op.result) == id(series_obj):
-                        input_series_var = self._get_var_name(prev_op.op_id)
-                        break
+                    try:
+                        if id(prev_op.result) == id(series_obj):
+                            # Check if this Series is in series_vars
+                            if prev_op.op_id in self.series_vars:
+                                input_series_var = self.series_vars[prev_op.op_id]
+                                break
+                            else:
+                                # Try to get the variable name and check if it's a Series*
+                                var_name = self._get_var_name(prev_op.op_id)
+                                # Check if this operation produces a Series
+                                if prev_op.op_name == 'df_getitem' or prev_op.obj_type == 'Series':
+                                    input_series_var = var_name
+                                    break
+                    except:
+                        pass
         
         if not input_series_var:
             lines.append(f"    // ERROR: Could not find input Series for lambda apply")
@@ -365,16 +384,21 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                     # Also check for pandas Series.mean() results
                     try:
                         import pandas as pd
-                        if isinstance(prev_op.result, (pd.Series, pd.DataFrame)):
+                        # Check by attributes instead of isinstance
+                        has_columns = hasattr(prev_op.result, 'columns')
+                        has_name = hasattr(prev_op.result, 'name')
+                        has_index = hasattr(prev_op.result, 'index')
+                        if (has_columns and has_index) or (has_name and has_index and not has_columns):
                             # Check if this is a mean operation result
                             op_name = getattr(prev_op, 'op_name', '')
                             if 'mean' in op_name.lower():
                                 # Extract scalar value from Series/DataFrame
                                 try:
-                                    if isinstance(prev_op.result, pd.Series):
+                                    if has_name and not has_columns:
+                                        # Series
                                         var_value = float(prev_op.result)
-                                    elif isinstance(prev_op.result, pd.DataFrame):
-                                        # Take first scalar value
+                                    elif has_columns:
+                                        # DataFrame - take first scalar value
                                         var_value = float(prev_op.result.values.flat[0])
                                     else:
                                         continue
@@ -479,20 +503,46 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                     col_data = column_data[col_name]
                     lines.append(f"    {result_var}->column_names[{i}] = strdup(\"{col_name}\");")
                     
+                    # Determine if this column is string or numeric
+                    is_string_column = False
+                    if len(col_data) > 0:
+                        # Check if the first value is a string
+                        first_val = col_data[0]
+                        if isinstance(first_val, str):
+                            is_string_column = True
+                    
                     # Create Series for this column
                     series_var = f"{result_var}_col_{i}"
-                    lines.append(f"    Series* {series_var} = series_create({num_rows}, 'f');")
+                    dtype_char = 's' if is_string_column else 'f'
+                    lines.append(f"    Series* {series_var} = series_create({num_rows}, '{dtype_char}');")
                     lines.append(f"    {series_var}->name = strdup(\"{col_name}\");")
                     
                     # Fill data
                     if len(col_data) > 0:
-                        for j, val in enumerate(col_data[:num_rows]):
-                            if np.isnan(val):
-                                lines.append(f"    {series_var}->data[{j}] = NAN;")
-                            elif np.isinf(val):
-                                lines.append(f"    {series_var}->data[{j}] = {'INFINITY' if val > 0 else '-INFINITY'};")
-                            else:
-                                lines.append(f"    {series_var}->data[{j}] = {val};")
+                        if is_string_column:
+                            # String column
+                            for j, val in enumerate(col_data[:num_rows]):
+                                if val is None or (isinstance(val, str) and val == ''):
+                                    lines.append(f"    {series_var}->string_data[{j}] = NULL;")
+                                else:
+                                    # Escape the string value
+                                    str_val = str(val).replace('\\', '\\\\').replace('"', '\\"')
+                                    lines.append(f"    {series_var}->string_data[{j}] = strdup(\"{str_val}\");")
+                        else:
+                            # Numeric column
+                            for j, val in enumerate(col_data[:num_rows]):
+                                try:
+                                    # Try to convert to float and check for NaN/Inf
+                                    float_val = float(val)
+                                    if np.isnan(float_val):
+                                        lines.append(f"    {series_var}->data[{j}] = NAN;")
+                                    elif np.isinf(float_val):
+                                        lines.append(f"    {series_var}->data[{j}] = {'INFINITY' if float_val > 0 else '-INFINITY'};")
+                                    else:
+                                        lines.append(f"    {series_var}->data[{j}] = {float_val};")
+                                except (ValueError, TypeError):
+                                    # If conversion fails, use 0
+                                    lines.append(f"    {series_var}->data[{j}] = 0.0;")
                     
                     lines.append(f"    {result_var}->columns[{i}] = {series_var};")
                 
@@ -500,8 +550,73 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                 allocated_vars.add(result_var)
                 return lines
         
+        # Special handling for Series constructor from list/array
+        if op.op_name == 'Series' and op.obj_type == 'Series' and len(op.args) > 0:
+            # Create Series from list or array
+            if isinstance(op.args[0], (list, np.ndarray)):
+                series_data = op.args[0]
+                try:
+                    series_array = np.array(series_data)
+                    length = len(series_array)
+                    
+                    # Determine dtype - check if it's string-like
+                    dtype = 'f'  # Default to float
+                    if len(series_data) > 0:
+                        first_val = series_data[0]
+                        if isinstance(first_val, str):
+                            dtype = 's'
+                        elif isinstance(first_val, (int, np.integer)):
+                            dtype = 'i'
+                    
+                    # Create Series structure
+                    lines.append(f"    // Create Series from list/array with {length} elements, dtype '{dtype}'")
+                    lines.append(f"    Series* {result_var} = series_create({length}, '{dtype}');")
+                    
+                    if dtype == 's':
+                        # String Series - need to convert values to strings
+                        for i, val in enumerate(series_data[:length]):
+                            if val is None:
+                                lines.append(f"    {result_var}->string_data[{i}] = NULL;")
+                            else:
+                                str_val = str(val).replace('\\', '\\\\').replace('"', '\\"')
+                                lines.append(f"    {result_var}->string_data[{i}] = strdup(\"{str_val}\");")
+                    else:
+                        # Numeric Series
+                        try:
+                            # Check if we have string data that shouldn't be converted
+                            if len(series_data) > 0:
+                                first_val = series_data[0]
+                                if isinstance(first_val, str):
+                                    # String data in numeric Series - shouldn't happen, but handle it
+                                    lines.append(f"    memset({result_var}->data, 0, {length} * sizeof(double));")
+                                else:
+                                    series_array = np.array(series_data, dtype=float)
+                                    for i, val in enumerate(series_array[:length]):
+                                        if np.isnan(val):
+                                            lines.append(f"    {result_var}->data[{i}] = NAN;")
+                                        elif np.isinf(val):
+                                            lines.append(f"    {result_var}->data[{i}] = {'INFINITY' if val > 0 else '-INFINITY'};")
+                                        else:
+                                            lines.append(f"    {result_var}->data[{i}] = {val};")
+                            else:
+                                # Empty series
+                                lines.append(f"    memset({result_var}->data, 0, {length} * sizeof(double));")
+                        except (ValueError, TypeError) as e:
+                            # If conversion fails (e.g., strings), use zeros
+                            lines.append(f"    memset({result_var}->data, 0, {length} * sizeof(double));")
+                    
+                    self.series_vars[op.op_id] = result_var
+                    allocated_vars.add(result_var)
+                    return lines
+                except (ValueError, TypeError):
+                    # If conversion fails, fall through to normal handling
+                    pass
+        
         # Get C function mapping
+        # For get_dummies, try both the actual obj_type and None (since it's a top-level function)
         func_info = CFunctionRegistry.get_c_function(op.op_name, op.obj_type)
+        if not func_info and op.op_name == 'get_dummies':
+            func_info = CFunctionRegistry.get_c_function(op.op_name, None)
         if not func_info:
             # No C implementation available - generate error comment
             lines.append(f"    // ERROR: No C implementation for {op.op_name} on {op.obj_type}")
@@ -657,9 +772,9 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                                 break
                             # Also check if it's a DataFrame by type
                             try:
-                                import pandas as pd
-                                if isinstance(prev_op.result, pd.DataFrame):
-                                    # Use the most recent DataFrame operation
+                                # Check by attributes instead of isinstance
+                                if hasattr(prev_op.result, 'columns') and hasattr(prev_op.result, 'index'):
+                                    # Looks like a DataFrame
                                     df_var = self._get_var_name(prev_op.op_id)
                                     break
                             except:
@@ -675,6 +790,15 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                     input_vars.append(f'"{column_name}"')
                 else:
                     input_vars.append(str(column_name))
+            
+            # Register the result as a Series* variable
+            # df_getitem returns a Series*, so we need to track it in series_vars
+            result_var = self._get_var_name(op.op_id)
+            func_info = CFunctionRegistry.get_c_function(op.op_name, op.obj_type)
+            if func_info and func_info.get('return_type') == 'Series*':
+                # This will be set when we generate the function call, but we need to register it here
+                # so lambda apply can find it
+                self.series_vars[op.op_id] = result_var
         # Special handling for concat - takes list of DataFrames
         elif op.op_name == 'concat':
             input_vars = []
@@ -765,8 +889,8 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                             df_var = self._get_var_name(prev_op.op_id)
                             break
                         try:
-                            import pandas as pd
-                            if isinstance(prev_op.result, pd.DataFrame) and id(prev_op.result) == id(df_obj):
+                            # Check by attributes and ID instead of isinstance
+                            if hasattr(prev_op.result, 'columns') and hasattr(prev_op.result, 'index') and id(prev_op.result) == id(df_obj):
                                 df_var = self._get_var_name(prev_op.op_id)
                                 break
                         except:
@@ -816,8 +940,8 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                             df_var = self._get_var_name(prev_op.op_id)
                             break
                         try:
-                            import pandas as pd
-                            if isinstance(prev_op.result, pd.DataFrame) and id(prev_op.result) == id(df_obj):
+                            # Check by attributes and ID instead of isinstance
+                            if hasattr(prev_op.result, 'columns') and hasattr(prev_op.result, 'index') and id(prev_op.result) == id(df_obj):
                                 df_var = self._get_var_name(prev_op.op_id)
                                 break
                         except:
@@ -842,6 +966,49 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                 input_vars.append(f'"{column_name[0]}"')
             else:
                 input_vars.append('""')
+        # Special handling for get_dummies - takes Series or DataFrame
+        elif op.op_name == 'get_dummies':
+            input_vars = []
+            # get_dummies can take a Series or DataFrame as first argument
+            if len(op.args) > 0:
+                arg0 = op.args[0]
+                # Check if it's a Series
+                series_var = None
+                if EXTENDED_OPS_AVAILABLE:
+                    # Try to find the Series in previous operations
+                    for prev_node in reversed(list(self.graph.nodes)):
+                        if prev_node.operation.op_id >= op.op_id:
+                            continue
+                        if isinstance(prev_node.operation, PandasOperation):
+                            prev_op = prev_node.operation
+                            try:
+                                if id(prev_op.result) == id(arg0):
+                                    if prev_op.op_id in self.series_vars:
+                                        series_var = self.series_vars[prev_op.op_id]
+                                    else:
+                                        series_var = self._get_var_name(prev_op.op_id)
+                                    break
+                            except:
+                                pass
+                            
+                            # Also check if it's a DataFrame column access result
+                            try:
+                                # Check by attributes and ID instead of isinstance
+                                if hasattr(prev_op.result, 'name') and hasattr(prev_op.result, 'index') and not hasattr(prev_op.result, 'columns') and id(prev_op.result) == id(arg0):
+                                    if prev_op.op_id in self.series_vars:
+                                        series_var = self.series_vars[prev_op.op_id]
+                                    else:
+                                        series_var = self._get_var_name(prev_op.op_id)
+                                    break
+                            except:
+                                pass
+                
+                if series_var:
+                    input_vars.append(series_var)
+                else:
+                    input_vars.append("NULL")
+            else:
+                input_vars.append("NULL")
         else:
             # Normal argument processing for other operations
             input_vars = []
@@ -996,6 +1163,8 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                     allocated_vars.add(result_var)
                 elif return_type == "Series*":
                     lines.append(f"    Series* {result_var} = {c_func}({', '.join(input_vars)});")
+                    # Register Series* variables so they can be found by later operations (e.g., lambda apply, get_dummies)
+                    # This is crucial for df_getitem results to be found by lambda operations
                     self.series_vars[op.op_id] = result_var
                     allocated_vars.add(result_var)
                 else:

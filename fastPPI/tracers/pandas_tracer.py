@@ -88,14 +88,18 @@ class PandasTracer:
             # Top-level functions
             'read_csv': pd.read_csv,
             'concat': pd.concat,
+            'get_dummies': pd.get_dummies,
             'DataFrame': pd.DataFrame,  # For patching DataFrame constructor
+            'Series': pd.Series,  # For patching Series constructor
         }
         
         # Track requests.get calls for http_get_json pattern
         self.pending_http_requests = {}  # response_id -> url
         self.json_responses = {}  # json_data_id -> response_id (to track which response produced which JSON)
         
-        # Patch methods
+        # Patch DataFrame class methods FIRST (before wrapping the constructor)
+        # This ensures all DataFrames created will have the patched methods
+        pd.DataFrame.__getitem__ = self._wrap_getitem('df_getitem', self.original_functions['df_getitem'])
         pd.DataFrame.mean = self._wrap_method('df_mean', self.original_functions['df_mean'], 'DataFrame')
         pd.DataFrame.median = self._wrap_method('df_median', self.original_functions['df_median'], 'DataFrame')
         pd.DataFrame.fillna = self._wrap_method('df_fillna', self.original_functions['df_fillna'], 'DataFrame')
@@ -104,7 +108,6 @@ class PandasTracer:
         pd.DataFrame.sort_values = self._wrap_method('df_sort_values', self.original_functions['df_sort_values'], 'DataFrame')
         pd.DataFrame.groupby = self._wrap_method('df_groupby', self.original_functions['df_groupby'], 'DataFrame')
         pd.DataFrame.astype = self._wrap_method('df_astype', self.original_functions['df_astype'], 'DataFrame')
-        pd.DataFrame.__getitem__ = self._wrap_getitem('df_getitem', self.original_functions['df_getitem'])
         
         pd.Series.mean = self._wrap_method('series_mean', self.original_functions['series_mean'], 'Series')
         pd.Series.median = self._wrap_method('series_median', self.original_functions['series_median'], 'Series')
@@ -121,9 +124,13 @@ class PandasTracer:
         
         pd.read_csv = self._wrap_function('read_csv', self.original_functions['read_csv'])
         pd.concat = self._wrap_function('concat', self.original_functions['concat'])
+        pd.get_dummies = self._wrap_function('get_dummies', self.original_functions['get_dummies'])
         
         # Patch DataFrame constructor to detect http_get_json pattern
         pd.DataFrame = self._wrap_dataframe_constructor('DataFrame', self.original_functions['DataFrame'])
+        
+        # Patch Series constructor to trace Series creation
+        pd.Series = self._wrap_series_constructor('Series', self.original_functions['Series'])
         
         # Patch requests.get if available
         try:
@@ -196,9 +203,11 @@ class PandasTracer:
             # Register results safely
             if PANDAS_AVAILABLE and pd is not None:
                 try:
-                    if isinstance(result, pd.DataFrame):
+                    # Use original class for isinstance check
+                    if isinstance(result, self.original_functions['DataFrame']):
                         self.dataframe_registry[id(result)] = result
-                    elif isinstance(result, pd.Series):
+                    elif hasattr(result, 'name') and hasattr(result, 'index') and not hasattr(result, 'columns'):
+                        # Looks like a Series
                         self.series_registry[id(result)] = result
                 except (TypeError, AttributeError):
                     pass
@@ -235,25 +244,40 @@ class PandasTracer:
     
     def _wrap_getitem(self, name: str, original_method: Callable) -> Callable:
         """Wrap DataFrame.__getitem__ to capture column access."""
+        tracer_self = self  # Capture self reference for the closure
+        original_dataframe_class = pd.DataFrame if PANDAS_AVAILABLE else None  # Store original DataFrame class
+        
         def wrapped(self_obj, key):
-            if not self.enabled:
-                return original_method(self_obj, key)
-            
-            # Execute the original getitem
+            # Always execute the original getitem first
             result = original_method(self_obj, key)
+            
+            # Only trace if tracing is enabled
+            if not tracer_self.enabled:
+                return result
             
             # Only trace if the result is a Series (single column access)
             # Skip if it's a DataFrame (multi-column access or boolean indexing)
-            if isinstance(result, pd.Series):
-                # Record the operation
-                self.op_counter += 1
-                op = PandasOperation('df_getitem', original_method, (self_obj, key), {}, 
-                                   result, self.op_counter, 'DataFrame')
-                op.column_name = key  # Store the column name
-                self.operations.append(op)
-                
-                # Register the resulting Series
-                self.series_registry[id(result)] = result
+            if PANDAS_AVAILABLE and pd is not None:
+                try:
+                    # Use the original DataFrame class for isinstance check
+                    # because pd.DataFrame might be wrapped
+                    if isinstance(result, tracer_self.original_functions['DataFrame']):
+                        # This is a DataFrame - don't trace
+                        return result
+                    elif hasattr(result, 'name') and hasattr(result, 'index') and not hasattr(result, 'columns'):
+                        # This looks like a Series (has name and index, but not columns)
+                        # Record the operation
+                        tracer_self.op_counter += 1
+                        op = PandasOperation('df_getitem', original_method, (self_obj, key), {}, 
+                                           result, tracer_self.op_counter, 'DataFrame')
+                        op.column_name = key  # Store the column name
+                        tracer_self.operations.append(op)
+                        
+                        # Register the resulting Series
+                        tracer_self.series_registry[id(result)] = result
+                except (TypeError, AttributeError) as e:
+                    # Silently ignore errors
+                    pass
                 
             return result
         return wrapped
@@ -279,8 +303,13 @@ class PandasTracer:
             self.operations.append(op)
             
             # Register result if it's a Series
-            if isinstance(result, pd.Series):
-                self.series_registry[id(result)] = result
+            if PANDAS_AVAILABLE and pd is not None:
+                try:
+                    # Check if it looks like a Series
+                    if hasattr(result, 'name') and hasattr(result, 'index') and not hasattr(result, 'columns'):
+                        self.series_registry[id(result)] = result
+                except (TypeError, AttributeError):
+                    pass
                 
             return result
         return wrapped
@@ -294,21 +323,39 @@ class PandasTracer:
             # Execute the original function
             result = original_func(*args, **kwargs)
             
+            # Determine object type for the operation
+            obj_type = "unknown"
+            if PANDAS_AVAILABLE and pd is not None:
+                try:
+                    # Check DataFrame first using original class
+                    if isinstance(result, self.original_functions['DataFrame']):
+                        obj_type = "DataFrame"
+                    elif hasattr(result, 'name') and hasattr(result, 'index') and not hasattr(result, 'columns'):
+                        # Looks like a Series (has name and index, but not columns)
+                        obj_type = "Series"
+                    elif hasattr(result, 'columns') and hasattr(result, 'index'):
+                        # Has columns - probably a DataFrame
+                        obj_type = "DataFrame"
+                except (TypeError, AttributeError):
+                    pass
+            
             # Record the operation
             self.op_counter += 1
-            op = PandasOperation(name, original_func, args, kwargs, result, self.op_counter)
+            op = PandasOperation(name, original_func, args, kwargs, result, self.op_counter, obj_type)
             self.operations.append(op)
             
             # Register results safely
             if PANDAS_AVAILABLE and pd is not None:
                 try:
-                    if isinstance(result, pd.DataFrame):
+                    # Use original class for isinstance check
+                    if isinstance(result, self.original_functions['DataFrame']):
                         self.dataframe_registry[id(result)] = result
-                    elif isinstance(result, pd.Series):
+                    elif hasattr(result, 'name') and hasattr(result, 'index') and not hasattr(result, 'columns'):
+                        # Looks like a Series
                         self.series_registry[id(result)] = result
                 except (TypeError, AttributeError):
                     pass
-                
+            
             return result
         return wrapped
     
@@ -392,7 +439,8 @@ class PandasTracer:
                 
                 if PANDAS_AVAILABLE and pd is not None:
                     try:
-                        if isinstance(result, pd.DataFrame):
+                        # Use original class for isinstance check
+                        if isinstance(result, self.original_functions['DataFrame']):
                             self.dataframe_registry[id(result)] = result
                     except (TypeError, AttributeError):
                         pass
@@ -416,8 +464,40 @@ class PandasTracer:
                 
                 if PANDAS_AVAILABLE and pd is not None:
                     try:
-                        if isinstance(result, pd.DataFrame):
+                        # Use original class for isinstance check
+                        if isinstance(result, self.original_functions['DataFrame']):
                             self.dataframe_registry[id(result)] = result
+                    except (TypeError, AttributeError):
+                        pass
+            
+            return result
+        return wrapped
+    
+    def _wrap_series_constructor(self, name: str, original_func: Callable) -> Callable:
+        """Wrap Series constructor to trace Series creation."""
+        def wrapped(*args, **kwargs):
+            if not self.enabled:
+                return original_func(*args, **kwargs)
+            
+            # Execute the original function
+            result = original_func(*args, **kwargs)
+            
+            # Trace Series construction from lists/arrays
+            should_trace = False
+            if len(args) > 0:
+                if isinstance(args[0], (list, np.ndarray)):
+                    should_trace = True
+            
+            if should_trace:
+                self.op_counter += 1
+                op = PandasOperation('Series', original_func, args, kwargs, result, self.op_counter, 'Series')
+                self.operations.append(op)
+                
+                if PANDAS_AVAILABLE and pd is not None:
+                    try:
+                        # Check if it looks like a Series
+                        if hasattr(result, 'name') and hasattr(result, 'index') and not hasattr(result, 'columns'):
+                            self.series_registry[id(result)] = result
                     except (TypeError, AttributeError):
                         pass
             

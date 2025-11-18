@@ -68,6 +68,12 @@ DataFrame* pandas_df_sort_values(const DataFrame* df, const char* by, int ascend
  */
 DataFrame* pandas_df_groupby(const DataFrame* df, const char* by);
 
+/**
+ * Convert categorical Series to dummy/indicator variables (one-hot encoding).
+ * Returns DataFrame with one column per unique value, filled with 1.0/0.0.
+ */
+DataFrame* pandas_series_get_dummies(const Series* series);
+
 // ============================================================================
 // Series Operations
 // ============================================================================
