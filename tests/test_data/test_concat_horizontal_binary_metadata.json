@@ -1,0 +1,27 @@
+{
+  "input_vars": [],
+  "num_outputs": 1,
+  "output_names": [
+    "output_0"
+  ],
+  "output_types": [
+    "dataframe"
+  ],
+  "output_lengths": [
+    8
+  ],
+  "output_shapes": [
+    [
+      2,
+      4
+    ]
+  ],
+  "output_columns": [
+    [
+      "a",
+      "b",
+      "c",
+      "d"
+    ]
+  ]
+}

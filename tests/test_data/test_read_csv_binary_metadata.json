@@ -1,0 +1,28 @@
+{
+  "input_vars": [
+    "csv_path"
+  ],
+  "num_outputs": 1,
+  "output_names": [
+    "output_0"
+  ],
+  "output_types": [
+    "dataframe"
+  ],
+  "output_lengths": [
+    15
+  ],
+  "output_shapes": [
+    [
+      5,
+      4
+    ]
+  ],
+  "output_columns": [
+    [
+      "id",
+      "age",
+      "income"
+    ]
+  ]
+}

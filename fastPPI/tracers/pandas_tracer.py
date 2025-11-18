@@ -68,6 +68,8 @@ class PandasTracer:
             'df_apply': pd.DataFrame.apply,
             'df_astype': pd.DataFrame.astype,
             'df_getitem': pd.DataFrame.__getitem__,  # Column access
+            'df_sort_values': pd.DataFrame.sort_values,
+            'df_groupby': pd.DataFrame.groupby,
             
             # Series methods
             'series_mean': pd.Series.mean,
@@ -85,6 +87,7 @@ class PandasTracer:
             
             # Top-level functions
             'read_csv': pd.read_csv,
+            'concat': pd.concat,
             'DataFrame': pd.DataFrame,  # For patching DataFrame constructor
         }
         
@@ -98,6 +101,8 @@ class PandasTracer:
         pd.DataFrame.fillna = self._wrap_method('df_fillna', self.original_functions['df_fillna'], 'DataFrame')
         pd.DataFrame.dropna = self._wrap_method('df_dropna', self.original_functions['df_dropna'], 'DataFrame')
         pd.DataFrame.apply = self._wrap_method('df_apply', self.original_functions['df_apply'], 'DataFrame')
+        pd.DataFrame.sort_values = self._wrap_method('df_sort_values', self.original_functions['df_sort_values'], 'DataFrame')
+        pd.DataFrame.groupby = self._wrap_method('df_groupby', self.original_functions['df_groupby'], 'DataFrame')
         pd.DataFrame.astype = self._wrap_method('df_astype', self.original_functions['df_astype'], 'DataFrame')
         pd.DataFrame.__getitem__ = self._wrap_getitem('df_getitem', self.original_functions['df_getitem'])
         
@@ -115,6 +120,7 @@ class PandasTracer:
         StringMethods.contains = self._wrap_str_method('str_contains', self.original_functions['str_contains'])
         
         pd.read_csv = self._wrap_function('read_csv', self.original_functions['read_csv'])
+        pd.concat = self._wrap_function('concat', self.original_functions['concat'])
         
         # Patch DataFrame constructor to detect http_get_json pattern
         pd.DataFrame = self._wrap_dataframe_constructor('DataFrame', self.original_functions['DataFrame'])
@@ -293,9 +299,15 @@ class PandasTracer:
             op = PandasOperation(name, original_func, args, kwargs, result, self.op_counter)
             self.operations.append(op)
             
-            # Register results
-            if isinstance(result, pd.DataFrame):
-                self.dataframe_registry[id(result)] = result
+            # Register results safely
+            if PANDAS_AVAILABLE and pd is not None:
+                try:
+                    if isinstance(result, pd.DataFrame):
+                        self.dataframe_registry[id(result)] = result
+                    elif isinstance(result, pd.Series):
+                        self.series_registry[id(result)] = result
+                except (TypeError, AttributeError):
+                    pass
                 
             return result
         return wrapped
@@ -387,9 +399,27 @@ class PandasTracer:
                 
                 return result
             
-            # Normal DataFrame construction - record as regular operation
-            # (We skip tracing normal DataFrame construction to avoid noise)
-            # Only trace if it's a known pattern like read_csv result
+            # Normal DataFrame construction - trace it so we can generate C code
+            # Check if it's a dict or list of dicts (common DataFrame creation patterns)
+            should_trace = False
+            if len(args) > 0:
+                if isinstance(args[0], dict):
+                    should_trace = True
+                elif isinstance(args[0], list) and len(args[0]) > 0:
+                    # List of dicts or list of lists
+                    should_trace = True
+            
+            if should_trace:
+                self.op_counter += 1
+                op = PandasOperation('DataFrame', original_func, args, kwargs, result, self.op_counter, 'DataFrame')
+                self.operations.append(op)
+                
+                if PANDAS_AVAILABLE and pd is not None:
+                    try:
+                        if isinstance(result, pd.DataFrame):
+                            self.dataframe_registry[id(result)] = result
+                    except (TypeError, AttributeError):
+                        pass
             
             return result
         return wrapped

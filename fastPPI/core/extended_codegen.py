@@ -136,6 +136,24 @@ class CFunctionRegistry:
             'return_type': 'Series*',
             'description': 'Get column from DataFrame'
         },
+        ('concat', None): {
+            'c_function': 'pandas_concat',
+            'include': '"pandas_c.h"',
+            'return_type': 'DataFrame*',
+            'description': 'Concatenate DataFrames'
+        },
+        ('sort_values', 'DataFrame'): {
+            'c_function': 'pandas_df_sort_values',
+            'include': '"pandas_c.h"',
+            'return_type': 'DataFrame*',
+            'description': 'Sort DataFrame by column values'
+        },
+        ('groupby', 'DataFrame'): {
+            'c_function': 'pandas_df_groupby',
+            'include': '"pandas_c.h"',
+            'return_type': 'DataFrame*',
+            'description': 'Group DataFrame by column (simplified)'
+        },
         
         # String operations
         ('re_search', None): {
@@ -429,6 +447,59 @@ class ExtendedCCodeGenerator(CCodeGenerator):
         if op.op_name in ('series_apply', 'df_apply') and hasattr(op, 'lambda_info') and op.lambda_info:
             return self._generate_lambda_apply_code(node, allocated_vars, declared_scalars)
         
+        # Special handling for DataFrame constructor from dict
+        if op.op_name == 'DataFrame' and op.obj_type == 'DataFrame' and len(op.args) > 0:
+            # Create DataFrame from dict or list
+            if isinstance(op.args[0], dict):
+                # Create DataFrame from dictionary
+                # Extract column names and data
+                df_dict = op.args[0]
+                num_rows = 0
+                columns = []
+                column_data = {}
+                
+                # Find max length to determine num_rows
+                for col_name, col_data in df_dict.items():
+                    columns.append(col_name)
+                    if isinstance(col_data, (list, np.ndarray)):
+                        col_array = np.array(col_data)
+                        num_rows = max(num_rows, len(col_array))
+                        column_data[col_name] = col_array
+                    else:
+                        # Scalar - convert to array
+                        column_data[col_name] = np.array([col_data])
+                        num_rows = max(num_rows, 1)
+                
+                # Create DataFrame structure
+                lines.append(f"    // Create DataFrame from dict with {len(columns)} columns, {num_rows} rows")
+                lines.append(f"    DataFrame* {result_var} = dataframe_create({num_rows}, {len(columns)});")
+                
+                # Add columns
+                for i, col_name in enumerate(columns):
+                    col_data = column_data[col_name]
+                    lines.append(f"    {result_var}->column_names[{i}] = strdup(\"{col_name}\");")
+                    
+                    # Create Series for this column
+                    series_var = f"{result_var}_col_{i}"
+                    lines.append(f"    Series* {series_var} = series_create({num_rows}, 'f');")
+                    lines.append(f"    {series_var}->name = strdup(\"{col_name}\");")
+                    
+                    # Fill data
+                    if len(col_data) > 0:
+                        for j, val in enumerate(col_data[:num_rows]):
+                            if np.isnan(val):
+                                lines.append(f"    {series_var}->data[{j}] = NAN;")
+                            elif np.isinf(val):
+                                lines.append(f"    {series_var}->data[{j}] = {'INFINITY' if val > 0 else '-INFINITY'};")
+                            else:
+                                lines.append(f"    {series_var}->data[{j}] = {val};")
+                    
+                    lines.append(f"    {result_var}->columns[{i}] = {series_var};")
+                
+                self.dataframe_vars[op.op_id] = result_var
+                allocated_vars.add(result_var)
+                return lines
+        
         # Get C function mapping
         func_info = CFunctionRegistry.get_c_function(op.op_name, op.obj_type)
         if not func_info:
@@ -604,6 +675,173 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                     input_vars.append(f'"{column_name}"')
                 else:
                     input_vars.append(str(column_name))
+        # Special handling for concat - takes list of DataFrames
+        elif op.op_name == 'concat':
+            input_vars = []
+            # Extract DataFrames from args[0] (which is a list)
+            if len(op.args) > 0 and isinstance(op.args[0], list):
+                df_list = op.args[0]
+                # Find DataFrame variables for each DataFrame in the list
+                df_vars = []
+                for df_obj in df_list:
+                    df_var = None
+                    if EXTENDED_OPS_AVAILABLE:
+                        # First, try to find by object ID
+                        for prev_node in reversed(list(self.graph.nodes)):
+                            if prev_node.operation.op_id >= op.op_id:
+                                continue
+                            if isinstance(prev_node.operation, PandasOperation):
+                                prev_op = prev_node.operation
+                                try:
+                                    if id(prev_op.result) == id(df_obj):
+                                        # Check if this variable is in dataframe_vars (was created)
+                                        if prev_op.op_id in self.dataframe_vars:
+                                            df_var = self.dataframe_vars[prev_op.op_id]
+                                        else:
+                                            df_var = self._get_var_name(prev_op.op_id)
+                                        break
+                                except:
+                                    pass
+                        
+                        # If not found by ID, try to find by position (for inline DataFrame creation)
+                        # Look for DataFrame operations before this concat
+                        if not df_var:
+                            dataframe_ops = []
+                            for prev_node in self.graph.nodes:
+                                if prev_node.operation.op_id >= op.op_id:
+                                    break
+                                if isinstance(prev_node.operation, PandasOperation):
+                                    prev_op = prev_node.operation
+                                    if prev_op.op_name == 'DataFrame' and prev_op.obj_type == 'DataFrame':
+                                        dataframe_ops.append(prev_op)
+                            
+                            # Use DataFrame operations in order they appear
+                            df_idx = len(df_vars)  # Which DataFrame in the list we're looking for
+                            if df_idx < len(dataframe_ops):
+                                prev_op = dataframe_ops[df_idx]
+                                if prev_op.op_id in self.dataframe_vars:
+                                    df_var = self.dataframe_vars[prev_op.op_id]
+                                else:
+                                    df_var = self._get_var_name(prev_op.op_id)
+                    
+                    if df_var:
+                        df_vars.append(df_var)
+                    else:
+                        df_vars.append("NULL")
+                
+                # Generate array of DataFrame pointers
+                if df_vars:
+                    df_array_var = f"{result_var}_dfs"
+                    lines.append(f"    DataFrame* {df_array_var}[{len(df_vars)}];")
+                    for i, df_var in enumerate(df_vars):
+                        lines.append(f"    {df_array_var}[{i}] = {df_var};")
+                    input_vars.append(df_array_var)
+                    input_vars.append(str(len(df_vars)))
+                    
+                    # Get axis from kwargs (default 0)
+                    axis = op.kwargs.get('axis', 0)
+                    input_vars.append(str(axis))
+                else:
+                    input_vars.append("NULL")
+                    input_vars.append("0")
+                    input_vars.append("0")
+            else:
+                input_vars.append("NULL")
+                input_vars.append("0")
+                input_vars.append("0")
+        # Special handling for sort_values - takes DataFrame, column name, and ascending
+        elif op.op_name == 'sort_values' or op.op_name == 'df_sort_values':
+            input_vars = []
+            # Find the source DataFrame
+            df_obj = op.args[0] if len(op.args) > 0 else None
+            df_var = None
+            if df_obj is not None and EXTENDED_OPS_AVAILABLE:
+                for prev_node in reversed(list(self.graph.nodes)):
+                    if prev_node.operation.op_id >= op.op_id:
+                        continue
+                    if isinstance(prev_node.operation, PandasOperation):
+                        prev_op = prev_node.operation
+                        if id(prev_op.result) == id(df_obj):
+                            df_var = self._get_var_name(prev_op.op_id)
+                            break
+                        try:
+                            import pandas as pd
+                            if isinstance(prev_op.result, pd.DataFrame) and id(prev_op.result) == id(df_obj):
+                                df_var = self._get_var_name(prev_op.op_id)
+                                break
+                        except:
+                            pass
+            
+            if df_var:
+                input_vars.append(df_var)
+            else:
+                input_vars.append("NULL")
+            
+            # Get column name from args or kwargs
+            column_name = None
+            if len(op.args) > 1:
+                column_name = op.args[1]
+            elif 'by' in op.kwargs:
+                column_name = op.kwargs['by']
+            
+            if isinstance(column_name, str):
+                input_vars.append(f'"{column_name}"')
+            elif isinstance(column_name, list) and len(column_name) > 0:
+                # For multiple columns, use first one (simplified)
+                input_vars.append(f'"{column_name[0]}"')
+            else:
+                input_vars.append('""')
+            
+            # Get ascending flag (default True)
+            ascending = op.kwargs.get('ascending', True)
+            if isinstance(ascending, bool):
+                input_vars.append("1" if ascending else "0")
+            elif isinstance(ascending, list):
+                input_vars.append("1" if ascending[0] else "0")
+            else:
+                input_vars.append("1")
+        # Special handling for groupby - takes DataFrame and column name
+        elif op.op_name == 'groupby' or op.op_name == 'df_groupby':
+            input_vars = []
+            # Find the source DataFrame
+            df_obj = op.args[0] if len(op.args) > 0 else None
+            df_var = None
+            if df_obj is not None and EXTENDED_OPS_AVAILABLE:
+                for prev_node in reversed(list(self.graph.nodes)):
+                    if prev_node.operation.op_id >= op.op_id:
+                        continue
+                    if isinstance(prev_node.operation, PandasOperation):
+                        prev_op = prev_node.operation
+                        if id(prev_op.result) == id(df_obj):
+                            df_var = self._get_var_name(prev_op.op_id)
+                            break
+                        try:
+                            import pandas as pd
+                            if isinstance(prev_op.result, pd.DataFrame) and id(prev_op.result) == id(df_obj):
+                                df_var = self._get_var_name(prev_op.op_id)
+                                break
+                        except:
+                            pass
+            
+            if df_var:
+                input_vars.append(df_var)
+            else:
+                input_vars.append("NULL")
+            
+            # Get column name from args or kwargs
+            column_name = None
+            if len(op.args) > 1:
+                column_name = op.args[1]
+            elif 'by' in op.kwargs:
+                column_name = op.kwargs['by']
+            
+            if isinstance(column_name, str):
+                input_vars.append(f'"{column_name}"')
+            elif isinstance(column_name, list) and len(column_name) > 0:
+                # For multiple columns, use first one (simplified)
+                input_vars.append(f'"{column_name[0]}"')
+            else:
+                input_vars.append('""')
         else:
             # Normal argument processing for other operations
             input_vars = []
@@ -1323,59 +1561,50 @@ class ExtendedCCodeGenerator(CCodeGenerator):
             # Check if this is a pandas operation with non-numeric output
             if EXTENDED_OPS_AVAILABLE and isinstance(op, PandasOperation):
                 # Check if result is DataFrame or Series - extract numeric data
-                try:
-                    import pandas as pd
-                    if isinstance(op.result, pd.DataFrame):
-                        # Extract numeric data from DataFrame
-                        # Check if this operation created a DataFrame* (stored in dataframe_vars)
-                        if op.op_id in self.dataframe_vars:
-                            df_var = self.dataframe_vars[op.op_id]
-                        else:
-                            # Use output_var directly (should be the same)
-                            df_var = output_var
-                        
-                        # Generate extraction code
-                        extracted_var = f"{df_var}_extracted"
-                        lines.append(f"    // Extract numeric data from DataFrame {df_var}")
-                        lines.append(f"    int64_t {extracted_var}_length;")
-                        lines.append(f"    double* {extracted_var} = dataframe_to_array({df_var}, &{extracted_var}_length);")
-                        lines.append(f"    if (!{extracted_var}) {{")
-                        lines.append(f"        {extracted_var} = (double*)malloc(sizeof(double));")
-                        lines.append(f"        {extracted_var}[0] = NAN;")
-                        lines.append(f"        {extracted_var}_length = 1;")
-                        lines.append(f"    }}")
-                        lines.append(f"    outputs[{output_index}] = {extracted_var};")
-                        allocated_vars.add(extracted_var)
-                        output_index += 1
-                        continue
+                # Use dataframe_vars/series_vars dicts which are set during code generation
+                if op.op_id in self.dataframe_vars:
+                    # Extract numeric data from DataFrame
+                    df_var = self.dataframe_vars[op.op_id]
                     
-                    elif isinstance(op.result, pd.Series):
-                        # Extract numeric data from Series
-                        # Check if this operation created a Series* (stored in series_vars)
-                        if op.op_id in self.series_vars:
-                            series_var = self.series_vars[op.op_id]
-                        else:
-                            # Use output_var directly (should be the same)
-                            series_var = output_var
-                        
-                        # Generate extraction code
-                        extracted_var = f"{series_var}_extracted"
-                        lines.append(f"    // Extract numeric data from Series {series_var}")
-                        lines.append(f"    int64_t {extracted_var}_length;")
-                        lines.append(f"    double* {extracted_var} = series_to_array({series_var}, &{extracted_var}_length);")
-                        lines.append(f"    if (!{extracted_var}) {{")
-                        lines.append(f"        {extracted_var} = (double*)malloc(sizeof(double));")
-                        lines.append(f"        {extracted_var}[0] = NAN;")
-                        lines.append(f"        {extracted_var}_length = 1;")
-                        lines.append(f"    }}")
-                        lines.append(f"    outputs[{output_index}] = {extracted_var};")
-                        allocated_vars.add(extracted_var)
-                        output_index += 1
-                        continue
-                except ImportError:
-                    pass
+                    # Generate extraction code with NULL check
+                    extracted_var = f"{df_var}_extracted"
+                    lines.append(f"    // Extract numeric data from DataFrame {df_var}")
+                    lines.append(f"    int64_t {extracted_var}_length = 0;")
+                    lines.append(f"    double* {extracted_var} = NULL;")
+                    lines.append(f"    if ({df_var} != NULL) {{")
+                    lines.append(f"        {extracted_var} = dataframe_to_array({df_var}, &{extracted_var}_length);")
+                    lines.append(f"    }}")
+                    lines.append(f"    if (!{extracted_var}) {{")
+                    lines.append(f"        {extracted_var} = (double*)malloc(sizeof(double));")
+                    lines.append(f"        {extracted_var}[0] = NAN;")
+                    lines.append(f"        {extracted_var}_length = 1;")
+                    lines.append(f"    }}")
+                    lines.append(f"    outputs[{output_index}] = {extracted_var};")
+                    allocated_vars.add(extracted_var)
+                    output_index += 1
+                    continue
                 
-                # If it's not DataFrame/Series, it's likely a scalar (e.g., mean())
+                # Check if this operation created a Series*
+                if op.op_id in self.series_vars:
+                    series_var = self.series_vars[op.op_id]
+                    
+                    # Generate extraction code
+                    extracted_var = f"{series_var}_extracted"
+                    lines.append(f"    // Extract numeric data from Series {series_var}")
+                    lines.append(f"    int64_t {extracted_var}_length;")
+                    lines.append(f"    double* {extracted_var} = series_to_array({series_var}, &{extracted_var}_length);")
+                    lines.append(f"    if (!{extracted_var}) {{")
+                    lines.append(f"        {extracted_var} = (double*)malloc(sizeof(double));")
+                    lines.append(f"        {extracted_var}[0] = NAN;")
+                    lines.append(f"        {extracted_var}_length = 1;")
+                    lines.append(f"    }}")
+                    lines.append(f"    outputs[{output_index}] = {extracted_var};")
+                    allocated_vars.add(extracted_var)
+                    output_index += 1
+                    continue
+                
+                # If it's a PandasOperation but not in dataframe_vars/series_vars,
+                # it's likely a scalar (e.g., mean())
                 # Fall through to handle it as a scalar
             
             # Check if variable was allocated as an array or declared as a scalar

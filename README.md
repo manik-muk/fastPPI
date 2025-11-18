@@ -55,14 +55,6 @@ fastppi preprocess.py \
     --verbose
 ```
 
-### 3. Benchmark Performance
-
-```bash
-python benchmark.py
-```
-
-**Result**: ~25x speedup! 🚀
-
 ## Supported Operations
 
 ### Fully Supported (Compiled to C)
@@ -97,95 +89,6 @@ fastppi-analyze <file.py>
 #   --save-c      Save generated C code
 #   --optimization Optimization flag (default: -O3)
 #   --verbose     Print detailed output
-```
-
-## Examples
-
-### Example 1: Simple Normalization
-
-```python
-# examples/simple_preprocess.py
-import numpy as np
-
-x = input_data
-mean_val = np.mean(x)
-std_val = np.std(x)
-normalized = np.divide(np.subtract(x, mean_val), std_val)
-output = normalized
-```
-
-```bash
-fastppi examples/simple_preprocess.py \
-    --inputs "input_data=[1.0,2.0,3.0,4.0,5.0]" \
-    --output preprocess_binary
-
-python benchmark.py
-# Result: 25x speedup (0.096ms → 0.004ms)
-```
-
-### Example 2: Matrix Operations
-
-```python
-# examples/matrix_operations.py
-import numpy as np
-
-x = input_data
-x_squared = np.multiply(x, x)
-x_shifted = np.add(x_squared, 1.5)
-output = np.sqrt(x_shifted)
-```
-
-```bash
-fastppi examples/matrix_operations.py \
-    --inputs "input_data=[1.0,2.0,3.0,4.0,5.0]" \
-    --output matrix_ops_binary
-
-python benchmark_matrix_ops.py
-# Result: 8x speedup (0.058ms → 0.007ms)
-```
-
-## Advanced Usage
-
-### Pandas Code Analysis
-
-FastPPI includes experimental support for analyzing pandas code:
-
-```bash
-# Analyze which operations can be compiled
-fastppi-analyze examples/feature_engineering.py
-```
-
-**Output shows:**
-- Which operations were captured
-- What can be compiled to C
-- What requires Python fallback
-- Optimization recommendations
-
-### Hybrid Approach (Recommended)
-
-For complex pipelines, use a hybrid approach:
-
-1. **Keep pandas** for: data loading, string ops, categorical encoding
-2. **Compile with FastPPI**: numeric array operations, math-heavy preprocessing
-3. **Combine**: Load with pandas → extract arrays → process with compiled binary
-
-**Example:**
-
-```python
-# Step 1: Pandas preprocessing (Python)
-import pandas as pd
-df = pd.read_csv('data.csv')
-df = df.dropna()
-df['city'] = df['city'].str.lower()
-
-# Step 2: Extract numeric arrays
-age = df['age'].values
-income = df['income'].values
-
-# Step 3: Use compiled binary for numeric preprocessing (C)
-import ctypes
-lib = ctypes.CDLL('./preprocess_binary.dylib')
-# ... call compiled function (see benchmark.py for example)
 ```
 
 ### Using Compiled Binaries
@@ -225,36 +128,6 @@ result = np.array([outputs[0][i] for i in range(len(input_data))])
 
 See `benchmark.py` for complete examples.
 
-## Project Structure
-
-```
-fastPPI/
-├── fastPPI/                  # Core package
-│   ├── core/                # Core compilation functionality
-│   │   ├── compiler.py      # C code compilation
-│   │   ├── codegen.py       # C code generation
-│   │   └── graph.py         # Computational graph
-│   ├── tracers/             # Operation tracers
-│   │   ├── tracer.py        # NumPy tracer
-│   │   ├── pandas_tracer.py # Pandas tracer (experimental)
-│   ├── analysis/            # Analysis tools
-│   │   ├── unified_tracer.py# Unified tracing
-│   │   ├── extended_codegen.py # Extended code generation
-│   │   └── analyze.py       # Analysis CLI
-│   ├── __init__.py
-│   ├── main.py              # Main CLI
-│   └── cli.py               # CLI wrapper
-├── examples/                # Example scripts
-│   ├── simple_preprocess.py
-│   ├── matrix_operations.py
-│   └── feature_engineering.py
-├── benchmark.py             # Benchmarking tools
-├── benchmark_matrix_ops.py
-├── README.md               # This file
-├── requirements.txt        # Dependencies
-└── setup.py               # Package setup
-```
-
 ## Performance
 
 Benchmark results on simple preprocessing tasks:
@@ -277,21 +150,6 @@ Performance gains increase with:
 3. **Generate C Code**: Convert operations to equivalent C code with optimizations
 4. **Compile**: Use clang -O3 to compile to shared library
 5. **Deploy**: Use compiled binary in production for fast preprocessing
-
-## Limitations
-
-### Current Limitations
-
-- **NumPy only**: Full support for NumPy operations only
-- **Static shapes**: Input/output shapes determined from examples
-- **No control flow**: Limited support for if/else, loops
-- **No Python operators**: Must use `np.add()` not `+`
-
-### Pandas Limitations
-
-- **Compilation**: Many pandas operations are now compilable to C
-- **Simple ops**: Numeric operations and lambdas are supported
-- **String ops**: Basic string operations (lower, upper, strip) are supported
 
 ## Troubleshooting
 
@@ -334,30 +192,3 @@ Contributions welcome! Areas to help:
 ## License
 
 MIT License
-
-## Citation
-
-If you use FastPPI in your research, please cite:
-
-```bibtex
-@software{fastppi2024,
-  title={FastPPI: Fast Preprocessing Pipeline Interpreter},
-  author={FastPPI Contributors},
-  year={2024},
-  url={https://github.com/yourusername/fastPPI}
-}
-```
-
-## Changelog
-
-### v0.2.0 (Current)
-- Added pandas analysis tools
-- Unified tracing system
-- `fastppi-analyze` command
-- Extended code generation framework
-
-### v0.1.0
-- Initial release
-- NumPy operation support
-- C code generation and compilation
-- Basic benchmarking tools

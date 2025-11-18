@@ -181,6 +181,44 @@ class CCodeGenerator:
             size = np.prod(shape)
             lines.append(f"    for (int i = 0; i < {size}; i++) {{ {result_var}[i] = 1.0; }}")
         
+        elif op.op_name == "arange":
+            # np.arange(start, stop, step) or np.arange(stop)
+            if needs_allocation:
+                shape = op.result.shape if hasattr(op.result, 'shape') else (len(op.result),)
+                if isinstance(shape, int):
+                    shape = (shape,)
+                size = np.prod(shape)
+                lines.append(self._generate_array_allocation(result_var, shape, op.result.dtype))
+                allocated_vars.add(result_var)
+            else:
+                shape = op.result.shape if hasattr(op.result, 'shape') else (len(op.result),)
+                if isinstance(shape, int):
+                    shape = (shape,)
+            size = np.prod(shape)
+            
+            # Determine start, stop, step
+            if len(op.args) == 1:
+                # np.arange(stop) - start=0, step=1
+                stop = op.args[0] if isinstance(op.args[0], (int, float)) else input_vars[0]
+                lines.append(f"    for (int i = 0; i < {size}; i++) {{ {result_var}[i] = (double)i; }}")
+            elif len(op.args) == 2:
+                # np.arange(start, stop) - step=1
+                start = op.args[0] if isinstance(op.args[0], (int, float)) else input_vars[0]
+                stop = op.args[1] if isinstance(op.args[1], (int, float)) else input_vars[1]
+                if isinstance(op.args[0], (int, float)) and isinstance(op.args[1], (int, float)):
+                    lines.append(f"    for (int i = 0; i < {size}; i++) {{ {result_var}[i] = {start} + (double)i; }}")
+                else:
+                    lines.append(f"    for (int i = 0; i < {size}; i++) {{ {result_var}[i] = {start} + (double)i; }}")
+            else:
+                # np.arange(start, stop, step)
+                start = op.args[0] if isinstance(op.args[0], (int, float)) else input_vars[0]
+                stop = op.args[1] if isinstance(op.args[1], (int, float)) else input_vars[1]
+                step = op.args[2] if isinstance(op.args[2], (int, float)) else input_vars[2]
+                if isinstance(op.args[0], (int, float)) and isinstance(op.args[2], (int, float)):
+                    lines.append(f"    for (int i = 0; i < {size}; i++) {{ {result_var}[i] = {start} + {step} * (double)i; }}")
+                else:
+                    lines.append(f"    for (int i = 0; i < {size}; i++) {{ {result_var}[i] = {start} + {step} * (double)i; }}")
+        
         elif op.op_name == "add":
             if op.result.shape and len(op.result.shape) > 0:
                 # Array addition
@@ -262,6 +300,32 @@ class CCodeGenerator:
             else:
                 lines.append(f"    {result_var} = 0.0;")
         
+        elif op.op_name == "max":
+            if isinstance(op.args[0], np.ndarray):
+                size = np.prod(op.args[0].shape)
+                # Variable already declared upfront
+                lines.append(f"    {result_var} = {input_vars[0]}[0];")
+                lines.append(f"    for (int i = 1; i < {size}; i++) {{")
+                lines.append(f"        if ({input_vars[0]}[i] > {result_var}) {{")
+                lines.append(f"            {result_var} = {input_vars[0]}[i];")
+                lines.append(f"        }}")
+                lines.append(f"    }}")
+            else:
+                lines.append(f"    {result_var} = {input_vars[0]};")
+        
+        elif op.op_name == "min":
+            if isinstance(op.args[0], np.ndarray):
+                size = np.prod(op.args[0].shape)
+                # Variable already declared upfront
+                lines.append(f"    {result_var} = {input_vars[0]}[0];")
+                lines.append(f"    for (int i = 1; i < {size}; i++) {{")
+                lines.append(f"        if ({input_vars[0]}[i] < {result_var}) {{")
+                lines.append(f"            {result_var} = {input_vars[0]}[i];")
+                lines.append(f"        }}")
+                lines.append(f"    }}")
+            else:
+                lines.append(f"    {result_var} = {input_vars[0]};")
+        
         elif op.op_name == "exp":
             if op.result.shape and len(op.result.shape) > 0:
                 size = np.prod(op.result.shape)
@@ -300,6 +364,19 @@ class CCodeGenerator:
             else:
                 # Scalar sqrt (variable already declared upfront)
                 lines.append(f"    {result_var} = sqrt({input_vars[0]});")
+        
+        elif op.op_name == "abs":
+            if op.result.shape and len(op.result.shape) > 0:
+                size = np.prod(op.result.shape)
+                if needs_allocation:
+                    lines.append(self._generate_array_allocation(result_var, op.result.shape, op.result.dtype))
+                    allocated_vars.add(result_var)
+                lines.append(f"    for (int i = 0; i < {size}; i++) {{")
+                lines.append(f"        {result_var}[i] = fabs({input_vars[0]}[i]);")
+                lines.append(f"    }}")
+            else:
+                # Scalar abs (variable already declared upfront)
+                lines.append(f"    {result_var} = fabs({input_vars[0]});")
         
         elif op.op_name == "subtract":
             if op.result.shape and len(op.result.shape) > 0:
@@ -398,6 +475,58 @@ class CCodeGenerator:
                 if len(input_vars) > 0:
                     size = int(np.prod(op.result.shape))
                     lines.append(f"    memcpy({result_var}, {input_vars[0]}, {size} * sizeof(double));")
+        
+        elif op.op_name == "transpose":
+            # Transpose 2D array (swap rows and columns)
+            if op.result.shape and len(op.result.shape) == 2:
+                if needs_allocation:
+                    lines.append(self._generate_array_allocation(result_var, op.result.shape, op.result.dtype))
+                    allocated_vars.add(result_var)
+                if len(input_vars) > 0 and isinstance(op.args[0], np.ndarray):
+                    rows = op.args[0].shape[0]
+                    cols = op.args[0].shape[1]
+                    lines.append(f"    for (int i = 0; i < {rows}; i++) {{")
+                    lines.append(f"        for (int j = 0; j < {cols}; j++) {{")
+                    lines.append(f"            {result_var}[j * {rows} + i] = {input_vars[0]}[i * {cols} + j];")
+                    lines.append(f"        }}")
+                    lines.append(f"    }}")
+            elif op.result.shape and len(op.result.shape) == 1:
+                # 1D transpose is a no-op, just copy
+                if needs_allocation:
+                    lines.append(self._generate_array_allocation(result_var, op.result.shape, op.result.dtype))
+                    allocated_vars.add(result_var)
+                if len(input_vars) > 0:
+                    size = int(np.prod(op.result.shape))
+                    lines.append(f"    memcpy({result_var}, {input_vars[0]}, {size} * sizeof(double));")
+        
+        elif op.op_name == "clip":
+            # np.clip(array, min, max)
+            if op.result.shape and len(op.result.shape) > 0:
+                size = np.prod(op.result.shape)
+                if needs_allocation:
+                    lines.append(self._generate_array_allocation(result_var, op.result.shape, op.result.dtype))
+                    allocated_vars.add(result_var)
+                # Get min and max values
+                min_val = input_vars[1] if len(input_vars) > 1 else "0.0"
+                max_val = input_vars[2] if len(input_vars) > 2 else "INFINITY"
+                if len(op.args) > 1 and isinstance(op.args[1], (int, float)):
+                    min_val = str(op.args[1])
+                if len(op.args) > 2 and isinstance(op.args[2], (int, float)):
+                    max_val = str(op.args[2])
+                lines.append(f"    for (int i = 0; i < {size}; i++) {{")
+                lines.append(f"        double val = {input_vars[0]}[i];")
+                lines.append(f"        {result_var}[i] = val < {min_val} ? {min_val} : (val > {max_val} ? {max_val} : val);")
+                lines.append(f"    }}")
+            else:
+                # Scalar clip
+                min_val = input_vars[1] if len(input_vars) > 1 else "0.0"
+                max_val = input_vars[2] if len(input_vars) > 2 else "INFINITY"
+                if len(op.args) > 1 and isinstance(op.args[1], (int, float)):
+                    min_val = str(op.args[1])
+                if len(op.args) > 2 and isinstance(op.args[2], (int, float)):
+                    max_val = str(op.args[2])
+                lines.append(f"    double val = {input_vars[0]};")
+                lines.append(f"    {result_var} = val < {min_val} ? {min_val} : (val > {max_val} ? {max_val} : val);")
         
         else:
             # Generic fallback (variable already declared upfront)

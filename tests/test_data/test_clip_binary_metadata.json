@@ -1,0 +1,24 @@
+{
+  "input_vars": [],
+  "num_outputs": 2,
+  "output_names": [
+    "output_0",
+    "output_1"
+  ],
+  "output_types": [
+    "array",
+    "array"
+  ],
+  "output_lengths": [
+    7,
+    7
+  ],
+  "output_shapes": [
+    [
+      7
+    ],
+    [
+      7
+    ]
+  ]
+}

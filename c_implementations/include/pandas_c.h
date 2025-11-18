@@ -43,6 +43,31 @@ DataFrame* pandas_http_get_json(const char* url);
  */
 Series* pandas_df_getitem(const DataFrame* df, const char* column_name);
 
+/**
+ * Concatenate DataFrames along axis (0 = rows, 1 = columns).
+ * dfs: Array of DataFrame pointers
+ * num_dfs: Number of DataFrames to concatenate
+ * axis: 0 for vertical (rows), 1 for horizontal (columns)
+ * Returns new DataFrame with concatenated data.
+ */
+DataFrame* pandas_concat(DataFrame** dfs, int num_dfs, int axis);
+
+/**
+ * Sort DataFrame by column values.
+ * by: Column name to sort by
+ * ascending: 1 for ascending, 0 for descending
+ * Returns new sorted DataFrame.
+ */
+DataFrame* pandas_df_sort_values(const DataFrame* df, const char* by, int ascending);
+
+/**
+ * Group DataFrame by column(s).
+ * by: Column name(s) to group by (for now, single column name)
+ * Returns a GroupBy object (simplified - just returns DataFrame for now).
+ * Note: Full groupby with aggregations requires more complex implementation.
+ */
+DataFrame* pandas_df_groupby(const DataFrame* df, const char* by);
+
 // ============================================================================
 // Series Operations
 // ============================================================================

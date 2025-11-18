@@ -77,12 +77,12 @@ def compile_with_clang(c_code: str, output_path: str,
                         link_libs.append("-lcurl")
                         link_libs.append("-ljansson")
                         # Add Homebrew library path if available
-                        import subprocess
                         try:
-                            brew_prefix = subprocess.check_output(['brew', '--prefix'], text=True).strip()
+                            import subprocess as sp
+                            brew_prefix = sp.check_output(['brew', '--prefix'], text=True).strip()
                             if brew_prefix:
                                 cmd.extend(["-L", f"{brew_prefix}/lib"])
-                        except (subprocess.CalledProcessError, FileNotFoundError):
+                        except (sp.CalledProcessError, FileNotFoundError):
                             pass
                 if 'string_c.h' in c_content:
                     link_libs.append("-lstring_c")

@@ -1,0 +1,16 @@
+{
+  "input_vars": [],
+  "num_outputs": 1,
+  "output_names": [
+    "output_0"
+  ],
+  "output_types": [
+    "scalar"
+  ],
+  "output_lengths": [
+    1
+  ],
+  "output_shapes": [
+    []
+  ]
+}
