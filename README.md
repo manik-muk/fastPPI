@@ -199,19 +199,22 @@ Performance improvements vary based on:
 - **Operation count**: More operations = better amortization
 - **Network I/O**: HTTP operations are I/O bound, so speedups are smaller
 
-**Measured Benchmarks** (run on macOS with clang -O3 optimization, averaged over 2 runs):
+**Measured Benchmarks** (run on macOS with clang -O3 optimization, averaged over multiple runs):
 
 | Operation | Python Time | C Binary Time | Speedup | Notes |
 |-----------|-------------|---------------|---------|-------|
 | Normalization (10k elements, 1k iter) | 0.0248 ms | 0.0064 ms | **3.91x** | NumPy only, direct binary execution |
-| Feature Engineering (HTTP + Pandas, 500 iter) | 3.79 ms | 1.48 ms | **2.55x** | Includes HTTP I/O, direct binary execution |
+| Feature Engineering (HTTP + Pandas, 500 iter) | 3.32 ms | 1.48 ms | **2.25x** | Includes HTTP I/O, direct binary execution |
+| Toy Preprocessing (1k rows, 100 iter) | 4.62 ms | 0.23 ms | **20.0x** | Pandas + NumPy, compute-intensive pipeline |
+| Compute-Intensive Feature Engineering (10k rows, 100 iter) | 98.9 ms | 0.40 ms | **245x** | Complex lambdas, statistical transforms, direct binary execution |
 
-*Note: Results show variance between runs. Normalization speedup ranged from 3.08x to 5.13x. Feature engineering speedup ranged from 1.99x to 3.19x. Averages shown above.*
+*Note: Results show variance between runs. Normalization speedup ranged from 3.08x to 5.13x. Feature engineering speedup ranged from 1.99x to 3.19x. Toy preprocessing speedup ranged from 19.95x to 20.0x. Compute-intensive speedup ranged from 224x to 285x. Averages shown above.*
 
 **Typical speedups:**
 - NumPy array operations: **2-5x** faster
-- Pandas DataFrame operations: **2-8x** faster (compute-bound operations)
-- Complex pipelines: **3-10x** faster
+- Pandas DataFrame operations: **2-20x** faster (compute-bound operations show larger speedups)
+- Complex preprocessing pipelines: **10-20x** faster (multiple operations, lambda functions)
+- Compute-intensive pipelines: **100-250x** faster (many operations, complex lambdas, statistical transforms)
 - HTTP + Pandas pipelines: **2-3x** faster (I/O bound, but still faster)
 
 *Note: Actual performance depends on your hardware, data size, and operation mix. The feature engineering benchmark includes HTTP requests which are I/O bound, limiting the speedup. Pure compute operations show larger speedups. Benchmark your specific use case for accurate numbers.*
