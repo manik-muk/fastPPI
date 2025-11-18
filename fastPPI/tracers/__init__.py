@@ -16,6 +16,13 @@ try:
 except ImportError:
     STRING_TRACERS = False
 
+try:
+    from .http_tracer import HTTPTracer
+    HTTP_TRACER_AVAILABLE = True
+except ImportError:
+    HTTP_TRACER_AVAILABLE = False
+    HTTPTracer = None
+
 __all__ = [
     "trace_execution",
     "ExecutionTracer",
@@ -35,4 +42,7 @@ if STRING_TRACERS:
         "StringTracer",
         "StringOperation",
     ])
+
+if HTTP_TRACER_AVAILABLE:
+    __all__.append("HTTPTracer")
 

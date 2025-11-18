@@ -16,6 +16,7 @@ except ImportError:
 
 from .tracer import Operation
 from .lambda_analyzer import analyze_lambda
+from .http_tracer import HTTPTracer
 
 
 class PandasOperation(Operation):
@@ -42,6 +43,8 @@ class PandasTracer:
         self.original_functions = {}
         self.dataframe_registry: Dict[int, pd.DataFrame] = {}
         self.series_registry: Dict[int, pd.Series] = {}
+        # Use HTTP tracer for tracking HTTP requests
+        self.http_tracer = HTTPTracer()
         
     def start_tracing(self):
         """Enable tracing of pandas operations."""
@@ -52,6 +55,8 @@ class PandasTracer:
         """Disable tracing and restore original functions."""
         self.enabled = False
         self._unpatch_pandas()
+        # Stop HTTP tracing
+        self.http_tracer.stop_tracing()
         
     def _patch_pandas(self):
         """Patch pandas functions and methods to capture calls."""
@@ -93,9 +98,7 @@ class PandasTracer:
             'Series': pd.Series,  # For patching Series constructor
         }
         
-        # Track requests.get calls for http_get_json pattern
-        self.pending_http_requests = {}  # response_id -> url
-        self.json_responses = {}  # json_data_id -> response_id (to track which response produced which JSON)
+        # HTTP tracking is now handled by HTTPTracer
         
         # Patch DataFrame class methods FIRST (before wrapping the constructor)
         # This ensures all DataFrames created will have the patched methods
@@ -132,17 +135,8 @@ class PandasTracer:
         # Patch Series constructor to trace Series creation
         pd.Series = self._wrap_series_constructor('Series', self.original_functions['Series'])
         
-        # Patch requests.get if available
-        try:
-            import requests
-            self.original_functions['requests_get'] = requests.get
-            requests.get = self._wrap_requests_get('requests_get', self.original_functions['requests_get'])
-            # Also patch response.json() method
-            if hasattr(requests.Response, 'json'):
-                self.original_functions['response_json'] = requests.Response.json
-                requests.Response.json = self._wrap_response_json('response_json', self.original_functions['response_json'])
-        except ImportError:
-            pass
+        # Start HTTP tracing (for detecting http_get_json pattern)
+        self.http_tracer.start_tracing()
         
     def _unpatch_pandas(self):
         """Restore original pandas functions."""
@@ -172,19 +166,7 @@ class PandasTracer:
         pd.read_csv = self.original_functions['read_csv']
         pd.DataFrame = self.original_functions['DataFrame']
         
-        # Restore requests.get if it was patched
-        try:
-            import requests
-            if 'requests_get' in self.original_functions:
-                requests.get = self.original_functions['requests_get']
-            if 'response_json' in self.original_functions:
-                requests.Response.json = self.original_functions['response_json']
-        except ImportError:
-            pass
-        
-        # Clear pending requests
-        self.pending_http_requests = {}
-        self.json_responses = {}
+        # HTTP tracing cleanup is handled by HTTPTracer
     
     def _wrap_method(self, name: str, original_method: Callable, obj_type: str) -> Callable:
         """Wrap a pandas method to capture its execution."""
@@ -359,39 +341,6 @@ class PandasTracer:
             return result
         return wrapped
     
-    def _wrap_requests_get(self, name: str, original_func: Callable) -> Callable:
-        """Wrap requests.get to track HTTP requests for http_get_json pattern."""
-        def wrapped(*args, **kwargs):
-            if not self.enabled:
-                return original_func(*args, **kwargs)
-            
-            # Execute the original function
-            response = original_func(*args, **kwargs)
-            
-            # Store the URL for this response
-            if len(args) > 0 and isinstance(args[0], str):
-                url = args[0]
-                self.pending_http_requests[id(response)] = url
-            
-            return response
-        return wrapped
-    
-    def _wrap_response_json(self, name: str, original_func: Callable) -> Callable:
-        """Wrap response.json() to track JSON data from HTTP responses."""
-        def wrapped(self_obj, *args, **kwargs):
-            if not self.enabled:
-                return original_func(self_obj, *args, **kwargs)
-            
-            # Execute the original function
-            json_data = original_func(self_obj, *args, **kwargs)
-            
-            # Track which response produced this JSON data
-            response_id = id(self_obj)
-            json_id = id(json_data)
-            self.json_responses[json_id] = response_id
-            
-            return json_data
-        return wrapped
     
     def _wrap_dataframe_constructor(self, name: str, original_func: Callable) -> Callable:
         """Wrap DataFrame constructor to detect http_get_json pattern."""
@@ -407,14 +356,10 @@ class PandasTracer:
                 data = args[0]
                 # Check if data looks like JSON (list or dict)
                 if isinstance(data, (list, dict)):
-                    # Check if this JSON data came from a response.json() call
-                    json_id = id(data)
-                    if json_id in self.json_responses:
-                        response_id = self.json_responses[json_id]
-                        if response_id in self.pending_http_requests:
-                            url = self.pending_http_requests[response_id]
+                    # Use HTTP tracer to get URL for this JSON data
+                    url = self.http_tracer.get_url_for_json(data)
                     # Also check if there's a URL in kwargs (for explicit passing)
-                    elif 'url' in kwargs:
+                    if not url and 'url' in kwargs:
                         url = kwargs['url']
             
             # Execute the original function
