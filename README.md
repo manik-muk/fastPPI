@@ -125,6 +125,12 @@ python -m fastPPI.main feature_engineering.py \
 - `series.str.upper()` - Convert to uppercase
 - `series.str.strip()` - Strip whitespace
 
+**Datetime Operations:**
+- `pd.to_datetime()` - Convert Series to datetime64
+- `series.dt.day` - Extract day component from datetime
+- `series.dt.month` - Extract month component from datetime
+- `series.dt.year` - Extract year component from datetime
+
 **Categorical:**
 - `pd.get_dummies()` - One-hot encoding
 

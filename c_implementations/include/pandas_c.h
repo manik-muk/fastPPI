@@ -133,6 +133,34 @@ Series* pandas_series_str_strip(const Series* series);
  */
 Series* pandas_series_isna(const Series* series);
 
+/**
+ * Extract day component from datetime Series.
+ * Input Series must have dtype 'd' (datetime64).
+ * Returns new int64 Series with day values (1-31).
+ */
+Series* pandas_series_dt_day(const Series* series);
+
+/**
+ * Extract month component from datetime Series.
+ * Input Series must have dtype 'd' (datetime64).
+ * Returns new int64 Series with month values (1-12).
+ */
+Series* pandas_series_dt_month(const Series* series);
+
+/**
+ * Extract year component from datetime Series.
+ * Input Series must have dtype 'd' (datetime64).
+ * Returns new int64 Series with year values.
+ */
+Series* pandas_series_dt_year(const Series* series);
+
+/**
+ * Convert Series to datetime64.
+ * Input Series can be string Series (dtype 's') with date strings.
+ * Returns new Series with dtype 'd' (datetime64, stored as int64 nanoseconds since epoch).
+ */
+Series* pandas_to_datetime(const Series* series);
+
 // ============================================================================
 // Utility Functions
 // ============================================================================

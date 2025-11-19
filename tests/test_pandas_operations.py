@@ -328,6 +328,39 @@ result = pd.get_dummies(df['category'])
 """
         return self.test("get_dummies_column", python_code)
     
+    def test_dt_day(self):
+        """Test .dt.day operation."""
+        python_code = """
+import pandas as pd
+
+dates = pd.Series(['2022-01-15', '2022-02-20', '2022-03-25', '2022-04-30'])
+dates = pd.to_datetime(dates)
+result = dates.dt.day
+"""
+        return self.test("dt_day", python_code)
+    
+    def test_dt_month(self):
+        """Test .dt.month operation."""
+        python_code = """
+import pandas as pd
+
+dates = pd.Series(['2022-01-15', '2022-02-20', '2022-03-25', '2022-04-30'])
+dates = pd.to_datetime(dates)
+result = dates.dt.month
+"""
+        return self.test("dt_month", python_code)
+    
+    def test_dt_year(self):
+        """Test .dt.year operation."""
+        python_code = """
+import pandas as pd
+
+dates = pd.Series(['2022-01-15', '2022-02-20', '2022-03-25', '2022-04-30'])
+dates = pd.to_datetime(dates)
+result = dates.dt.year
+"""
+        return self.test("dt_year", python_code)
+    
     def run_all_tests(self):
         """Run all tests."""
         print("=" * 80)
@@ -359,6 +392,9 @@ result = pd.get_dummies(df['category'])
             ("groupby", self.test_groupby),
             ("get_dummies (Series)", self.test_get_dummies_series),
             ("get_dummies (DataFrame column)", self.test_get_dummies_dataframe_column),
+            ("dt.day", self.test_dt_day),
+            ("dt.month", self.test_dt_month),
+            ("dt.year", self.test_dt_year),
         ]
         
         print(f"Running {len(tests)} tests...\n")

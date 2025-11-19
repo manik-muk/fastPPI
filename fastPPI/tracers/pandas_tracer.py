@@ -60,8 +60,16 @@ class PandasTracer:
         
     def _patch_pandas(self):
         """Patch pandas functions and methods to capture calls."""
-        # Import StringMethods
+        # Import StringMethods and DatetimeProperties
         from pandas.core.strings.accessor import StringMethods
+        try:
+            from pandas.core.indexes.accessors import DatetimeProperties
+        except ImportError:
+            # Fallback for older pandas versions
+            try:
+                from pandas.core.accessor import DatetimeProperties
+            except ImportError:
+                DatetimeProperties = None
         
         # Store original DataFrame methods
         self.original_functions = {
@@ -90,10 +98,16 @@ class PandasTracer:
             'str_replace': StringMethods.replace,
             'str_contains': StringMethods.contains,
             
+            # DatetimeProperties (for .dt operations)
+            'dt_day': DatetimeProperties.day if DatetimeProperties else None,
+            'dt_month': DatetimeProperties.month if DatetimeProperties else None,
+            'dt_year': DatetimeProperties.year if DatetimeProperties else None,
+            
             # Top-level functions
             'read_csv': pd.read_csv,
             'concat': pd.concat,
             'get_dummies': pd.get_dummies,
+            'to_datetime': pd.to_datetime,
             'DataFrame': pd.DataFrame,  # For patching DataFrame constructor
             'Series': pd.Series,  # For patching Series constructor
         }
@@ -125,9 +139,16 @@ class PandasTracer:
         StringMethods.replace = self._wrap_str_method('str_replace', self.original_functions['str_replace'])
         StringMethods.contains = self._wrap_str_method('str_contains', self.original_functions['str_contains'])
         
+        # Patch DatetimeProperties directly (if available)
+        if DatetimeProperties and self.original_functions['dt_day']:
+            DatetimeProperties.day = self._wrap_dt_method('dt_day', self.original_functions['dt_day'])
+            DatetimeProperties.month = self._wrap_dt_method('dt_month', self.original_functions['dt_month'])
+            DatetimeProperties.year = self._wrap_dt_method('dt_year', self.original_functions['dt_year'])
+        
         pd.read_csv = self._wrap_function('read_csv', self.original_functions['read_csv'])
         pd.concat = self._wrap_function('concat', self.original_functions['concat'])
         pd.get_dummies = self._wrap_function('get_dummies', self.original_functions['get_dummies'])
+        pd.to_datetime = self._wrap_function('to_datetime', self.original_functions['to_datetime'])
         
         # Patch DataFrame constructor to detect http_get_json pattern
         pd.DataFrame = self._wrap_dataframe_constructor('DataFrame', self.original_functions['DataFrame'])
@@ -141,6 +162,13 @@ class PandasTracer:
     def _unpatch_pandas(self):
         """Restore original pandas functions."""
         from pandas.core.strings.accessor import StringMethods
+        try:
+            from pandas.core.indexes.accessors import DatetimeProperties
+        except ImportError:
+            try:
+                from pandas.core.accessor import DatetimeProperties
+            except ImportError:
+                DatetimeProperties = None
         
         pd.DataFrame.mean = self.original_functions['df_mean']
         pd.DataFrame.median = self.original_functions['df_median']
@@ -163,7 +191,14 @@ class PandasTracer:
         StringMethods.replace = self.original_functions['str_replace']
         StringMethods.contains = self.original_functions['str_contains']
         
+        # Restore DatetimeProperties (if available)
+        if DatetimeProperties and self.original_functions.get('dt_day'):
+            DatetimeProperties.day = self.original_functions['dt_day']
+            DatetimeProperties.month = self.original_functions['dt_month']
+            DatetimeProperties.year = self.original_functions['dt_year']
+        
         pd.read_csv = self.original_functions['read_csv']
+        pd.to_datetime = self.original_functions['to_datetime']
         pd.DataFrame = self.original_functions['DataFrame']
         
         # HTTP tracing cleanup is handled by HTTPTracer
@@ -304,6 +339,38 @@ class PandasTracer:
                 return original_method(self_obj, *args, **kwargs)
             
             # The StringMethods object has ._orig which is the Series
+            series = self_obj._orig if hasattr(self_obj, '_orig') else None
+            
+            # Execute the original method
+            result = original_method(self_obj, *args, **kwargs)
+            
+            # Record the operation
+            self.op_counter += 1
+            op = PandasOperation(name, original_method, (series,) + args, kwargs, 
+                               result, self.op_counter, 'Series')
+            # Store the source series for code generation
+            op.source_series = series
+            self.operations.append(op)
+            
+            # Register result if it's a Series
+            if PANDAS_AVAILABLE and pd is not None:
+                try:
+                    # Check if it looks like a Series
+                    if hasattr(result, 'name') and hasattr(result, 'index') and not hasattr(result, 'columns'):
+                        self.series_registry[id(result)] = result
+                except (TypeError, AttributeError):
+                    pass
+                
+            return result
+        return wrapped
+    
+    def _wrap_dt_method(self, name: str, original_method: Callable) -> Callable:
+        """Wrap a DatetimeProperties method to capture its execution."""
+        def wrapped(self_obj, *args, **kwargs):
+            if not self.enabled:
+                return original_method(self_obj, *args, **kwargs)
+            
+            # The DatetimeProperties object has ._orig which is the Series
             series = self_obj._orig if hasattr(self_obj, '_orig') else None
             
             # Execute the original method

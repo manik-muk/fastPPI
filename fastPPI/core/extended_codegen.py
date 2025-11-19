@@ -100,6 +100,24 @@ class CFunctionRegistry:
             'return_type': 'Series*',
             'description': 'Strip whitespace from Series strings'
         },
+        ('dt_day', 'Series'): {
+            'c_function': 'pandas_series_dt_day',
+            'include': '"pandas_c.h"',
+            'return_type': 'Series*',
+            'description': 'Extract day component from datetime Series'
+        },
+        ('dt_month', 'Series'): {
+            'c_function': 'pandas_series_dt_month',
+            'include': '"pandas_c.h"',
+            'return_type': 'Series*',
+            'description': 'Extract month component from datetime Series'
+        },
+        ('dt_year', 'Series'): {
+            'c_function': 'pandas_series_dt_year',
+            'include': '"pandas_c.h"',
+            'return_type': 'Series*',
+            'description': 'Extract year component from datetime Series'
+        },
         ('isna', 'Series'): {
             'c_function': 'pandas_series_isna',
             'include': '"pandas_c.h"',
@@ -159,6 +177,12 @@ class CFunctionRegistry:
             'include': '"pandas_c.h"',
             'return_type': 'DataFrame*',
             'description': 'Convert categorical Series to dummy/indicator variables'
+        },
+        ('to_datetime', None): {
+            'c_function': 'pandas_to_datetime',
+            'include': '"pandas_c.h"',
+            'return_type': 'Series*',
+            'description': 'Convert Series to datetime64'
         },
         
         # String operations
@@ -889,6 +913,44 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                 input_vars.append("NULL")
                 input_vars.append("0")
                 input_vars.append("0")
+        # Special handling for to_datetime - takes a Series
+        elif op.op_name == 'to_datetime':
+            input_vars = []
+            # Find the source Series
+            series_obj = op.args[0] if len(op.args) > 0 else None
+            series_var = None
+            if series_obj is not None and EXTENDED_OPS_AVAILABLE:
+                for prev_node in reversed(list(self.graph.nodes)):
+                    if prev_node.operation.op_id >= op.op_id:
+                        continue
+                    if isinstance(prev_node.operation, PandasOperation):
+                        prev_op = prev_node.operation
+                        try:
+                            if id(prev_op.result) == id(series_obj):
+                                # Check if this variable is in series_vars (was created)
+                                if prev_op.op_id in self.series_vars:
+                                    series_var = self.series_vars[prev_op.op_id]
+                                else:
+                                    series_var = self._get_var_name(prev_op.op_id)
+                                break
+                        except:
+                            pass
+                        # Also check by attributes
+                        try:
+                            if (hasattr(prev_op.result, 'name') and hasattr(prev_op.result, 'index') and 
+                                not hasattr(prev_op.result, 'columns') and id(prev_op.result) == id(series_obj)):
+                                if prev_op.op_id in self.series_vars:
+                                    series_var = self.series_vars[prev_op.op_id]
+                                else:
+                                    series_var = self._get_var_name(prev_op.op_id)
+                                break
+                        except:
+                            pass
+            
+            if series_var:
+                input_vars.append(series_var)
+            else:
+                input_vars.append("NULL  /* Could not find source Series */")
         # Special handling for sort_values - takes DataFrame, column name, and ascending
         elif op.op_name == 'sort_values' or op.op_name == 'df_sort_values':
             input_vars = []
@@ -1388,7 +1450,25 @@ class ExtendedCCodeGenerator(CCodeGenerator):
         
         # Generate function call with appropriate indentation
         indent = "        " if is_batch_mode else "    "
-        if return_type == 'char*':
+        
+        # Special handling for regex_findall - needs output parameters
+        if op.op_name == 're_findall' or c_func == 'regex_findall':
+            # regex_findall signature: int regex_findall(const char* pattern, const char* text, char*** matches, int* num_matches)
+            # Declare output parameters
+            matches_var = f"{result_var}_matches"
+            num_matches_var = f"{result_var}_num_matches"
+            lines.append(f"{indent}char** {matches_var} = NULL;")
+            lines.append(f"{indent}int {num_matches_var} = 0;")
+            # Add output parameters to input_vars
+            input_vars.append(matches_var)
+            input_vars.append(f"&{num_matches_var}")
+            # Generate function call
+            if result_var not in declared_scalars:
+                lines.append(f"{indent}int {result_var};")
+                declared_scalars.add(result_var)
+            lines.append(f"{indent}{result_var} = {c_func}({', '.join(input_vars)});")
+            # Note: matches_var and num_matches_var would need to be freed, but for now we'll leave them
+        elif return_type == 'char*':
             # String return - allocate
             lines.append(f"{indent}{return_type} {result_var} = {c_func}({', '.join(input_vars)});")
             allocated_vars.add(result_var)

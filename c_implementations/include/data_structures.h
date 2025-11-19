@@ -24,7 +24,7 @@ struct Series {
     int64_t* index;         // Optional index array
     bool has_nulls;         // Whether series contains NaN/None
     int64_t* null_mask;     // Bitmask for null values (1 = null)
-    char dtype;             // 'f' = float64, 'i' = int64, 's' = string, 'b' = bool
+    char dtype;             // 'f' = float64, 'i' = int64, 's' = string, 'b' = bool, 'd' = datetime64 (int64 nanoseconds since epoch)
     char* name;             // Series name
 };
 
