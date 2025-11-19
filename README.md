@@ -131,6 +131,14 @@ python -m fastPPI.main feature_engineering.py \
 - `series.dt.month` - Extract month component from datetime
 - `series.dt.year` - Extract year component from datetime
 
+**Rolling Window Operations:**
+- `series.rolling(window).mean()` - Rolling window mean
+- `series.rolling(window).sum()` - Rolling window sum
+
+**Exponential Moving Average:**
+- `series.ewm(span=...).mean()` - Exponential moving average with span
+- `series.ewm(alpha=...).mean()` - Exponential moving average with alpha
+
 **Categorical:**
 - `pd.get_dummies()` - One-hot encoding
 

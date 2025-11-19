@@ -28,6 +28,9 @@ class PandasOperation(Operation):
         self.obj_type = obj_type  # "DataFrame", "Series", etc.
         self.column_name = None  # For column-specific operations
         self.lambda_info = None  # For apply() operations with lambda functions
+        self.window_size = None  # For rolling operations
+        self.span = None  # For ewm operations
+        self.alpha = None  # For ewm operations
         
     def __repr__(self):
         return f"PandasOperation(op_name='{self.op_name}', obj_type='{self.obj_type}', id={self.op_id})"
@@ -90,6 +93,8 @@ class PandasTracer:
             'series_fillna': pd.Series.fillna,
             'series_apply': pd.Series.apply,
             'series_astype': pd.Series.astype,
+            'series_rolling': pd.Series.rolling,
+            'series_ewm': pd.Series.ewm,
             
             # StringMethods (for .str operations)
             'str_lower': StringMethods.lower,
@@ -131,6 +136,8 @@ class PandasTracer:
         pd.Series.fillna = self._wrap_method('series_fillna', self.original_functions['series_fillna'], 'Series')
         pd.Series.apply = self._wrap_method('series_apply', self.original_functions['series_apply'], 'Series')
         pd.Series.astype = self._wrap_method('series_astype', self.original_functions['series_astype'], 'Series')
+        pd.Series.rolling = self._wrap_rolling('series_rolling', self.original_functions['series_rolling'])
+        pd.Series.ewm = self._wrap_ewm('series_ewm', self.original_functions['series_ewm'])
         
         # Patch StringMethods directly
         StringMethods.lower = self._wrap_str_method('str_lower', self.original_functions['str_lower'])
@@ -183,6 +190,27 @@ class PandasTracer:
         pd.Series.fillna = self.original_functions['series_fillna']
         pd.Series.apply = self.original_functions['series_apply']
         pd.Series.astype = self.original_functions['series_astype']
+        pd.Series.rolling = self.original_functions['series_rolling']
+        pd.Series.ewm = self.original_functions['series_ewm']
+        
+        # Restore Rolling and EWM methods if they were patched
+        try:
+            from pandas.core.window.rolling import Rolling
+            if hasattr(Rolling, '_fastppi_mean_patched'):
+                # Note: We can't easily restore the original methods without storing them
+                # For now, we'll leave them patched (they check self.enabled)
+                pass
+        except ImportError:
+            pass
+        
+        try:
+            from pandas.core.window.ewm import ExponentialMovingWindow
+            if hasattr(ExponentialMovingWindow, '_fastppi_mean_patched'):
+                # Note: We can't easily restore the original methods without storing them
+                # For now, we'll leave them patched (they check self.enabled)
+                pass
+        except ImportError:
+            pass
         
         # Restore StringMethods
         StringMethods.lower = self.original_functions['str_lower']
@@ -394,6 +422,142 @@ class PandasTracer:
                     pass
                 
             return result
+        return wrapped
+    
+    def _wrap_rolling(self, name: str, original_method: Callable) -> Callable:
+        """Wrap Series.rolling() to capture window size and return wrapped Rolling object."""
+        def wrapped(self_obj, *args, **kwargs):
+            if not self.enabled:
+                return original_method(self_obj, *args, **kwargs)
+            
+            # Extract window size
+            window = kwargs.get('window', args[0] if len(args) > 0 else None)
+            
+            # Execute the original method
+            rolling_obj = original_method(self_obj, *args, **kwargs)
+            
+            # Patch the Rolling object's methods if not already patched
+            if hasattr(rolling_obj, '_fastppi_patched'):
+                return rolling_obj
+            
+            # Store reference to source series and window size
+            rolling_obj._fastppi_source_series = self_obj
+            rolling_obj._fastppi_window = window
+            rolling_obj._fastppi_patched = True
+            
+            # Patch Rolling.mean() and Rolling.sum()
+            from pandas.core.window.rolling import Rolling
+            if not hasattr(Rolling, '_fastppi_mean_patched'):
+                original_rolling_mean = Rolling.mean
+                original_rolling_sum = Rolling.sum
+                
+                def rolling_mean_wrapper(rolling_self, *args, **kwargs):
+                    if not self.enabled:
+                        return original_rolling_mean(rolling_self, *args, **kwargs)
+                    result = original_rolling_mean(rolling_self, *args, **kwargs)
+                    # Record the operation
+                    self.op_counter += 1
+                    source_series = getattr(rolling_self, '_fastppi_source_series', None)
+                    window_size = getattr(rolling_self, '_fastppi_window', None)
+                    op = PandasOperation('rolling_mean', original_rolling_mean, (source_series,), 
+                                       {'window': window_size}, result, self.op_counter, 'Series')
+                    op.window_size = window_size
+                    op.source_series = source_series
+                    self.operations.append(op)
+                    # Register result
+                    if PANDAS_AVAILABLE and pd is not None:
+                        try:
+                            if hasattr(result, 'name') and hasattr(result, 'index') and not hasattr(result, 'columns'):
+                                self.series_registry[id(result)] = result
+                        except (TypeError, AttributeError):
+                            pass
+                    return result
+                
+                def rolling_sum_wrapper(rolling_self, *args, **kwargs):
+                    if not self.enabled:
+                        return original_rolling_sum(rolling_self, *args, **kwargs)
+                    result = original_rolling_sum(rolling_self, *args, **kwargs)
+                    # Record the operation
+                    self.op_counter += 1
+                    source_series = getattr(rolling_self, '_fastppi_source_series', None)
+                    window_size = getattr(rolling_self, '_fastppi_window', None)
+                    op = PandasOperation('rolling_sum', original_rolling_sum, (source_series,), 
+                                       {'window': window_size}, result, self.op_counter, 'Series')
+                    op.window_size = window_size
+                    op.source_series = source_series
+                    self.operations.append(op)
+                    # Register result
+                    if PANDAS_AVAILABLE and pd is not None:
+                        try:
+                            if hasattr(result, 'name') and hasattr(result, 'index') and not hasattr(result, 'columns'):
+                                self.series_registry[id(result)] = result
+                        except (TypeError, AttributeError):
+                            pass
+                    return result
+                
+                Rolling.mean = rolling_mean_wrapper
+                Rolling.sum = rolling_sum_wrapper
+                Rolling._fastppi_mean_patched = True
+            
+            return rolling_obj
+        return wrapped
+    
+    def _wrap_ewm(self, name: str, original_method: Callable) -> Callable:
+        """Wrap Series.ewm() to capture span/alpha and return wrapped EWM object."""
+        def wrapped(self_obj, *args, **kwargs):
+            if not self.enabled:
+                return original_method(self_obj, *args, **kwargs)
+            
+            # Extract span or alpha
+            span = kwargs.get('span', None)
+            alpha = kwargs.get('alpha', None)
+            
+            # Execute the original method
+            ewm_obj = original_method(self_obj, *args, **kwargs)
+            
+            # Patch the EWM object's methods if not already patched
+            if hasattr(ewm_obj, '_fastppi_patched'):
+                return ewm_obj
+            
+            # Store reference to source series and parameters
+            ewm_obj._fastppi_source_series = self_obj
+            ewm_obj._fastppi_span = span
+            ewm_obj._fastppi_alpha = alpha
+            ewm_obj._fastppi_patched = True
+            
+            # Patch ExponentialMovingWindow.mean()
+            from pandas.core.window.ewm import ExponentialMovingWindow
+            if not hasattr(ExponentialMovingWindow, '_fastppi_mean_patched'):
+                original_ewm_mean = ExponentialMovingWindow.mean
+                
+                def ewm_mean_wrapper(ewm_self, *args, **kwargs):
+                    if not self.enabled:
+                        return original_ewm_mean(ewm_self, *args, **kwargs)
+                    result = original_ewm_mean(ewm_self, *args, **kwargs)
+                    # Record the operation
+                    self.op_counter += 1
+                    source_series = getattr(ewm_self, '_fastppi_source_series', None)
+                    span = getattr(ewm_self, '_fastppi_span', None)
+                    alpha = getattr(ewm_self, '_fastppi_alpha', None)
+                    op = PandasOperation('ewm_mean', original_ewm_mean, (source_series,), 
+                                       {'span': span, 'alpha': alpha}, result, self.op_counter, 'Series')
+                    op.span = span
+                    op.alpha = alpha
+                    op.source_series = source_series
+                    self.operations.append(op)
+                    # Register result
+                    if PANDAS_AVAILABLE and pd is not None:
+                        try:
+                            if hasattr(result, 'name') and hasattr(result, 'index') and not hasattr(result, 'columns'):
+                                self.series_registry[id(result)] = result
+                        except (TypeError, AttributeError):
+                            pass
+                    return result
+                
+                ExponentialMovingWindow.mean = ewm_mean_wrapper
+                ExponentialMovingWindow._fastppi_mean_patched = True
+            
+            return ewm_obj
         return wrapped
     
     def _wrap_function(self, name: str, original_func: Callable) -> Callable:

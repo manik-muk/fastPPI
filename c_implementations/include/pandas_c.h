@@ -161,6 +161,29 @@ Series* pandas_series_dt_year(const Series* series);
  */
 Series* pandas_to_datetime(const Series* series);
 
+/**
+ * Compute rolling window mean of Series.
+ * window_size: Size of the rolling window
+ * Returns new Series with rolling mean values.
+ */
+Series* pandas_series_rolling_mean(const Series* series, int64_t window_size);
+
+/**
+ * Compute rolling window sum of Series.
+ * window_size: Size of the rolling window
+ * Returns new Series with rolling sum values.
+ */
+Series* pandas_series_rolling_sum(const Series* series, int64_t window_size);
+
+/**
+ * Compute exponential moving average (EMA) of Series.
+ * span: Span parameter for EMA (if provided, alpha is calculated from span)
+ * alpha: Alpha parameter for EMA (decay factor, 0 < alpha <= 1)
+ * If both span and alpha are provided, span takes precedence.
+ * Returns new Series with EMA values.
+ */
+Series* pandas_series_ewm_mean(const Series* series, double span, double alpha);
+
 // ============================================================================
 // Utility Functions
 // ============================================================================

@@ -184,6 +184,24 @@ class CFunctionRegistry:
             'return_type': 'Series*',
             'description': 'Convert Series to datetime64'
         },
+        ('rolling_mean', 'Series'): {
+            'c_function': 'pandas_series_rolling_mean',
+            'include': '"pandas_c.h"',
+            'return_type': 'Series*',
+            'description': 'Compute rolling window mean of Series'
+        },
+        ('rolling_sum', 'Series'): {
+            'c_function': 'pandas_series_rolling_sum',
+            'include': '"pandas_c.h"',
+            'return_type': 'Series*',
+            'description': 'Compute rolling window sum of Series'
+        },
+        ('ewm_mean', 'Series'): {
+            'c_function': 'pandas_series_ewm_mean',
+            'include': '"pandas_c.h"',
+            'return_type': 'Series*',
+            'description': 'Compute exponential moving average of Series'
+        },
         
         # String operations
         ('re_search', None): {
@@ -667,6 +685,9 @@ class ExtendedCCodeGenerator(CCodeGenerator):
         c_func = func_info['c_function']
         return_type = func_info['return_type']
         
+        # Track if we've already set input_vars in special handling
+        input_vars_set = False
+        
         # Special handling for fillna - detect if fill value is string
         if op.op_name in ('fillna', 'series_fillna') and len(op.args) > 1:
             fill_value = op.args[1] if len(op.args) > 1 else op.kwargs.get('value', None)
@@ -685,7 +706,8 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                 # Note: We'll add the strategy to input_vars after building the list
         
         # Special handling for str operations - they store the source series
-        if hasattr(op, 'source_series') and op.source_series is not None:
+        if (hasattr(op, 'source_series') and op.source_series is not None and 
+            op.op_name in ('str_lower', 'str_upper', 'str_strip', 'str_replace', 'str_contains')):
             # For str operations, find the Series that was used
             source_var = None
             if EXTENDED_OPS_AVAILABLE:
@@ -700,12 +722,89 @@ class ExtendedCCodeGenerator(CCodeGenerator):
             
             if source_var:
                 input_vars = [source_var]
+                input_vars_set = True
             else:
                 input_vars = []
+                input_vars_set = True
+        # Special handling for rolling operations
+        elif op.op_name in ('rolling_mean', 'rolling_sum'):
+            input_vars = []
+            input_vars_set = True
+            # Find the source Series
+            source_series = getattr(op, 'source_series', None)
+            if source_series is not None:
+                source_var = None
+                if EXTENDED_OPS_AVAILABLE:
+                    for prev_node in reversed(list(self.graph.nodes)):
+                        if prev_node.operation.op_id >= op.op_id:
+                            continue
+                        if isinstance(prev_node.operation, PandasOperation):
+                            prev_op = prev_node.operation
+                            try:
+                                if id(prev_op.result) == id(source_series):
+                                    if prev_op.op_id in self.series_vars:
+                                        source_var = self.series_vars[prev_op.op_id]
+                                    else:
+                                        source_var = self._get_var_name(prev_op.op_id)
+                                    break
+                            except:
+                                pass
+                
+                if source_var:
+                    input_vars.append(source_var)
+                else:
+                    input_vars.append("NULL  /* Could not find source Series */")
+            else:
+                input_vars.append("NULL  /* No source Series */")
+            
+            # Add window size
+            window_size = getattr(op, 'window_size', None) or op.kwargs.get('window', None)
+            if window_size is not None:
+                input_vars.append(str(int(window_size)))
+            else:
+                input_vars.append("3  /* Default window size */")  # Default fallback
+        # Special handling for ewm operations
+        elif op.op_name == 'ewm_mean':
+            input_vars = []
+            input_vars_set = True
+            # Find the source Series
+            source_series = getattr(op, 'source_series', None)
+            if source_series is not None:
+                source_var = None
+                if EXTENDED_OPS_AVAILABLE:
+                    for prev_node in reversed(list(self.graph.nodes)):
+                        if prev_node.operation.op_id >= op.op_id:
+                            continue
+                        if isinstance(prev_node.operation, PandasOperation):
+                            prev_op = prev_node.operation
+                            try:
+                                if id(prev_op.result) == id(source_series):
+                                    if prev_op.op_id in self.series_vars:
+                                        source_var = self.series_vars[prev_op.op_id]
+                                    else:
+                                        source_var = self._get_var_name(prev_op.op_id)
+                                    break
+                            except:
+                                pass
+                
+                if source_var:
+                    input_vars.append(source_var)
+                else:
+                    input_vars.append("NULL  /* Could not find source Series */")
+            else:
+                input_vars.append("NULL  /* No source Series */")
+            
+            # Add span and alpha
+            span = getattr(op, 'span', None) or op.kwargs.get('span', None)
+            alpha = getattr(op, 'alpha', None) or op.kwargs.get('alpha', None)
+            # Use NaN to indicate "not provided"
+            input_vars.append(str(float(span)) if span is not None else "NAN")
+            input_vars.append(str(float(alpha)) if alpha is not None else "NAN")
         # Special handling for read_csv - csv_path is a string input variable
         elif op.op_name == 'read_csv':
             # For read_csv, the first argument is csv_path which is a string input
             input_vars = []
+            input_vars_set = True
             if len(op.args) > 0:
                 csv_path_arg = op.args[0]
                 # Check if this is an input variable by matching string value to input_arrays
@@ -744,6 +843,7 @@ class ExtendedCCodeGenerator(CCodeGenerator):
         elif op.op_name == 'http_get_json':
             # For http_get_json, the URL comes from the operation's url attribute or args
             input_vars = []
+            input_vars_set = True
             url_arg = None
             
             # Try to get URL from operation attribute (set by tracer)
@@ -794,6 +894,7 @@ class ExtendedCCodeGenerator(CCodeGenerator):
         elif op.op_name == 'df_getitem':
             # For column access, args[0] is the DataFrame, args[1] is the column name
             input_vars = []
+            input_vars_set = True
             if len(op.args) >= 2:
                 df_obj = op.args[0]  # The DataFrame being indexed
                 column_name = op.args[1]  # The column name
@@ -842,6 +943,7 @@ class ExtendedCCodeGenerator(CCodeGenerator):
         # Special handling for concat - takes list of DataFrames
         elif op.op_name == 'concat':
             input_vars = []
+            input_vars_set = True
             # Extract DataFrames from args[0] (which is a list)
             if len(op.args) > 0 and isinstance(op.args[0], list):
                 df_list = op.args[0]
@@ -916,6 +1018,7 @@ class ExtendedCCodeGenerator(CCodeGenerator):
         # Special handling for to_datetime - takes a Series
         elif op.op_name == 'to_datetime':
             input_vars = []
+            input_vars_set = True
             # Find the source Series
             series_obj = op.args[0] if len(op.args) > 0 else None
             series_var = None
@@ -954,6 +1057,7 @@ class ExtendedCCodeGenerator(CCodeGenerator):
         # Special handling for sort_values - takes DataFrame, column name, and ascending
         elif op.op_name == 'sort_values' or op.op_name == 'df_sort_values':
             input_vars = []
+            input_vars_set = True
             # Find the source DataFrame
             df_obj = op.args[0] if len(op.args) > 0 else None
             df_var = None
@@ -1005,6 +1109,7 @@ class ExtendedCCodeGenerator(CCodeGenerator):
         # Special handling for groupby - takes DataFrame and column name
         elif op.op_name == 'groupby' or op.op_name == 'df_groupby':
             input_vars = []
+            input_vars_set = True
             # Find the source DataFrame
             df_obj = op.args[0] if len(op.args) > 0 else None
             df_var = None
@@ -1047,6 +1152,7 @@ class ExtendedCCodeGenerator(CCodeGenerator):
         # Special handling for get_dummies - takes Series or DataFrame
         elif op.op_name == 'get_dummies':
             input_vars = []
+            input_vars_set = True
             # get_dummies can take a Series or DataFrame as first argument
             if len(op.args) > 0:
                 arg0 = op.args[0]
@@ -1087,7 +1193,7 @@ class ExtendedCCodeGenerator(CCodeGenerator):
                     input_vars.append("NULL")
             else:
                 input_vars.append("NULL")
-        else:
+        if not input_vars_set:
             # Normal argument processing for other operations
             input_vars = []
             for arg in op.args:

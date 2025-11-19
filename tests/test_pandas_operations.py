@@ -361,6 +361,46 @@ result = dates.dt.year
 """
         return self.test("dt_year", python_code)
     
+    def test_rolling_mean(self):
+        """Test .rolling(window).mean() operation."""
+        python_code = """
+import pandas as pd
+
+data = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+result = data.rolling(window=3).mean()
+"""
+        return self.test("rolling_mean", python_code)
+    
+    def test_rolling_sum(self):
+        """Test .rolling(window).sum() operation."""
+        python_code = """
+import pandas as pd
+
+data = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+result = data.rolling(window=3).sum()
+"""
+        return self.test("rolling_sum", python_code)
+    
+    def test_ewm_mean_span(self):
+        """Test .ewm(span=...).mean() operation."""
+        python_code = """
+import pandas as pd
+
+data = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+result = data.ewm(span=3).mean()
+"""
+        return self.test("ewm_mean_span", python_code)
+    
+    def test_ewm_mean_alpha(self):
+        """Test .ewm(alpha=...).mean() operation."""
+        python_code = """
+import pandas as pd
+
+data = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+result = data.ewm(alpha=0.5).mean()
+"""
+        return self.test("ewm_mean_alpha", python_code)
+    
     def run_all_tests(self):
         """Run all tests."""
         print("=" * 80)
@@ -395,6 +435,10 @@ result = dates.dt.year
             ("dt.day", self.test_dt_day),
             ("dt.month", self.test_dt_month),
             ("dt.year", self.test_dt_year),
+            ("rolling(window).mean()", self.test_rolling_mean),
+            ("rolling(window).sum()", self.test_rolling_sum),
+            ("ewm(span=...).mean()", self.test_ewm_mean_span),
+            ("ewm(alpha=...).mean()", self.test_ewm_mean_alpha),
         ]
         
         print(f"Running {len(tests)} tests...\n")

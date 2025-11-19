@@ -515,6 +515,18 @@ class CCodeGenerator:
         
         elif op.op_name == "clip":
             # np.clip(array, min, max)
+            # Skip if input is NULL (likely a Series/DataFrame result that can't be processed as numpy array)
+            if len(input_vars) > 0 and input_vars[0] == "NULL":
+                lines.append(f"    // Skipping clip operation - input is NULL (likely Series/DataFrame)")
+                if needs_allocation and op.result.shape and len(op.result.shape) > 0:
+                    size = np.prod(op.result.shape)
+                    lines.append(self._generate_array_allocation(result_var, op.result.shape, op.result.dtype))
+                    allocated_vars.add(result_var)
+                    # Initialize with zeros
+                    lines.append(f"    for (int i = 0; i < {size}; i++) {{")
+                    lines.append(f"        {result_var}[i] = 0.0;")
+                    lines.append(f"    }}")
+                return lines
             if op.result.shape and len(op.result.shape) > 0:
                 size = np.prod(op.result.shape)
                 if needs_allocation:
