@@ -53,6 +53,31 @@ def compile_with_clang(c_code: str, output_path: str,
         # -march=native enables all CPU-specific optimizations (SIMD, instruction sets)
         cmd.append("-march=native")
         
+        # Numba-style optimizations for maximum performance
+        # -ffast-math: Enable aggressive floating-point optimizations (like Numba's fastmath)
+        cmd.append("-ffast-math")
+        
+        # -funroll-loops: Unroll loops for better performance (similar to Numba's loop unrolling)
+        cmd.append("-funroll-loops")
+        
+        # -ftree-vectorize: Enable automatic vectorization (SIMD)
+        cmd.append("-ftree-vectorize")
+        
+        # -fomit-frame-pointer: Reduce overhead (when safe)
+        cmd.append("-fomit-frame-pointer")
+        
+        # -finline-functions: Inline small functions (like Numba's inlining)
+        cmd.append("-finline-functions")
+        
+        # -flto: Link-time optimization for better cross-module optimization
+        # Note: This can slow down compilation but improves runtime performance
+        # cmd.append("-flto")  # Commented out as it can cause issues with shared libraries
+        
+        # Additional optimization flags
+        cmd.append("-fno-signed-zeros")  # Allow optimizations that ignore sign of zero
+        cmd.append("-fno-trapping-math")  # Assume no floating-point exceptions
+        cmd.append("-fassociative-math")  # Allow reassociation of floating-point operations
+        
         if additional_flags:
             cmd.extend(additional_flags)
         

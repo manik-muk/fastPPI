@@ -238,7 +238,7 @@ Performance improvements vary based on:
 1. **Trace Execution**: Run Python code with example inputs, capturing all NumPy and pandas operations
 2. **Build Graph**: Construct computational graph with operation dependencies
 3. **Generate C Code**: Convert operations to equivalent C code with optimizations
-4. **Compile**: Use clang -O3 to compile to shared library
+4. **Compile**: Use clang with aggressive optimizations to compile to shared library
 5. **Deploy**: Execute compiled binary directly or load via ctypes
 
 ## Architecture
