@@ -53,6 +53,105 @@ def compile_with_clang(c_code: str, output_path: str,
         # -march=native enables all CPU-specific optimizations (SIMD, instruction sets)
         cmd.append("-march=native")
         
+        # Check for BLAS and OpenMP in the code
+        with open(c_file, 'r') as f:
+            c_content = f.read()
+            
+            # Always link BLAS (we always use it for matrix multiplication)
+            if 'cblas_dgemm' in c_content:
+                # Add BLAS library linking
+                # Try to find BLAS library (same logic as codegen)
+                # sys and os are already imported at module level
+                
+                blas_lib = None
+                # Check conda/miniconda environment
+                conda_prefix = os.environ.get('CONDA_PREFIX', '')
+                if conda_prefix:
+                    for lib_name in ['libopenblas.dylib', 'libcblas.dylib', 'libblas.dylib']:
+                        lib_path = f"{conda_prefix}/lib/{lib_name}"
+                        if os.path.exists(lib_path):
+                            blas_lib = lib_path
+                            break
+                
+                if not blas_lib:
+                    # Try Python prefix
+                    python_prefix = sys.prefix
+                    for lib_name in ['libopenblas.dylib', 'libcblas.dylib']:
+                        lib_path = f"{python_prefix}/lib/{lib_name}"
+                        if os.path.exists(lib_path):
+                            blas_lib = lib_path
+                            break
+                
+                if not blas_lib:
+                    # Try to find via numpy
+                    try:
+                        import numpy as np
+                        numpy_path = np.__file__
+                        numpy_dir = os.path.dirname(numpy_path)
+                        lib_dir = os.path.join(numpy_dir, '..', '..', 'lib')
+                        lib_dir = os.path.abspath(lib_dir)
+                        
+                        for lib_file in os.listdir(lib_dir):
+                            if ('openblas' in lib_file.lower() or 'cblas' in lib_file.lower()) and \
+                               (lib_file.endswith('.dylib') or lib_file.endswith('.so')):
+                                blas_lib = os.path.join(lib_dir, lib_file)
+                                break
+                    except:
+                        pass
+                
+                if blas_lib:
+                    # Add library path and link against BLAS
+                    lib_dir = os.path.dirname(blas_lib)
+                    lib_name = os.path.basename(blas_lib)
+                    # Extract library name without extension and 'lib' prefix
+                    if lib_name.startswith('lib') and (lib_name.endswith('.dylib') or lib_name.endswith('.so')):
+                        lib_base = lib_name[3:].split('.')[0]  # Remove 'lib' prefix and extension
+                        cmd.extend(["-L", lib_dir])
+                        cmd.append(f"-l{lib_base}")
+                        # Add rpath on macOS so library can be found at runtime
+                        if sys.platform == "darwin":
+                            cmd.extend(["-Wl,-rpath", lib_dir])
+                    else:
+                        # Link directly to the library file
+                        cmd.append(blas_lib)
+                        if sys.platform == "darwin":
+                            cmd.extend(["-Wl,-rpath", lib_dir])
+                else:
+                    # Try standard library names
+                    cmd.append("-lopenblas")
+                    cmd.append("-lcblas")
+            
+            # Check if OpenMP is used
+            if '#include <omp.h>' in c_content:
+                # Add OpenMP flags
+                if sys.platform == "darwin":
+                    # macOS: use libomp (keg-only, needs explicit paths)
+                    try:
+                        import subprocess as sp
+                        brew_prefix = sp.check_output(['brew', '--prefix'], text=True).strip()
+                        libomp_path = f"{brew_prefix}/opt/libomp"
+                        
+                        # Check if libomp exists and add correct paths
+                        if os.path.exists(f"{libomp_path}/include/omp.h"):
+                            cmd.append("-Xpreprocessor")
+                            cmd.append("-fopenmp")
+                            cmd.extend(["-I", f"{libomp_path}/include"])
+                            cmd.extend(["-L", f"{libomp_path}/lib"])
+                            cmd.append("-lomp")
+                        else:
+                            # Fallback: try old location
+                            cmd.append("-Xpreprocessor")
+                            cmd.append("-fopenmp")
+                            cmd.append("-lomp")
+                            if brew_prefix:
+                                cmd.extend(["-L", f"{brew_prefix}/lib"])
+                    except (sp.CalledProcessError, FileNotFoundError, Exception):
+                        # If we can't find libomp, skip OpenMP
+                        pass
+                else:
+                    # Linux: standard OpenMP
+                    cmd.append("-fopenmp")
+        
         # Numba-style optimizations for maximum performance
         # -ffast-math: Enable aggressive floating-point optimizations (like Numba's fastmath)
         cmd.append("-ffast-math")

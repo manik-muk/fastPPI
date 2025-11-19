@@ -177,6 +177,18 @@ def trace_execution(user_code: str, example_inputs: Dict[str, Any],
     Returns:
         List of captured operations
     """
+    # Validate and convert user_code to string if needed
+    if not isinstance(user_code, (str, bytes)):
+        raise TypeError(
+            f"trace_execution() expects user_code to be a string or bytes, "
+            f"got {type(user_code).__name__}. "
+            f"If you're passing a function, convert it to a code string first."
+        )
+    
+    # Convert bytes to string if needed
+    if isinstance(user_code, bytes):
+        user_code = user_code.decode('utf-8')
+    
     tracer = ExecutionTracer()
     
     # Prepare execution environment
